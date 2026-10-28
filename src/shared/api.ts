@@ -26,4 +26,9 @@ export type GraphGitApi = {
   fetch: (repoPath: string) => Promise<Result<string>>
   initRepo: (repoPath: string) => Promise<Result<string>>
   copyText: (text: string) => Promise<boolean>
+  minimize: () => Promise<void>
+  toggleMaximize: () => Promise<boolean>
+  closeWindow: () => Promise<void>
+  isMaximized: () => Promise<boolean>
+  onMaximized: (cb: (maximized: boolean) => void) => () => void
 }

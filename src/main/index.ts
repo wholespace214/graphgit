@@ -53,12 +53,13 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1440,
     height: 900,
-    minWidth: 1100,
-    minHeight: 720,
+    minWidth: 720,
+    minHeight: 640,
     show: false,
     backgroundColor: '#0e1116',
     title: 'GraphGit',
     icon: appIcon(),
+    titleBarStyle: 'hidden',
     autoHideMenuBar: true,
     webPreferences: {
       preload: preloadScript(),
@@ -69,6 +70,11 @@ function createWindow() {
   })
   mainWindow = win
   win.removeMenu()
+  const sendMaximized = (maximized: boolean) => {
+    if (!win.isDestroyed()) win.webContents.send('window:maximized', maximized)
+  }
+  win.on('maximize', () => sendMaximized(true))
+  win.on('unmaximize', () => sendMaximized(false))
   win.once('ready-to-show', () => win.show())
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null
@@ -109,6 +115,20 @@ function handle<T>(channel: string, fn: (...args: unknown[]) => Promise<T>) {
 }
 
 function registerIpc() {
+  ipcMain.handle('window:minimize', (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.minimize()
+  })
+  ipcMain.handle('window:toggle-maximize', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win) return false
+    if (win.isMaximized()) win.unmaximize()
+    else win.maximize()
+    return win.isMaximized()
+  })
+  ipcMain.handle('window:close', (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.close()
+  })
+  ipcMain.handle('window:is-maximized', (event) => Boolean(BrowserWindow.fromWebContents(event.sender)?.isMaximized()))
   ipcMain.handle('repo:pick', async (event, defaultPath: unknown) => {
     const parent = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const options = {

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { baseName, formatWhen } from '../format'
 import type { Project } from '../projects'
 import { Logo } from './Logo'
+import { WindowControls } from './WindowControls'
 
 export function ProjectsPage({
   projects,
@@ -45,12 +46,13 @@ export function ProjectsPage({
     <div className="projects-page">
       <header className="toolbar">
         <div className="brand">
-          <Logo />
+          <Logo size={18} />
           <span>GraphGit</span>
         </div>
         <span className="branch-pill">Projects</span>
         <div className="spacer" />
         {busy && <span className="busy-label">{busy}</span>}
+        <WindowControls />
       </header>
       {busy && <div className="busy-line" />}
       <div className="projects-body">
