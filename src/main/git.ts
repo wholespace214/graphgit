@@ -344,6 +344,16 @@ async function resolveRepo(repoPath: string): Promise<string> {
   return path.resolve(top.stdout.trim())
 }
 
+export async function repoWatchTargets(repoPath: string): Promise<{ root: string; gitDirs: string[] }> {
+  const root = await resolveRepo(repoPath)
+  const gitDirResult = await runGit(root, ['rev-parse', '--absolute-git-dir'], { check: true })
+  const commonResult = await runGit(root, ['rev-parse', '--git-common-dir'], { check: true })
+  const gitDir = path.resolve(gitDirResult.stdout.trim())
+  const commonDir = path.resolve(root, commonResult.stdout.trim())
+  const gitDirs = commonDir === gitDir ? [gitDir] : [gitDir, commonDir]
+  return { root, gitDirs }
+}
+
 function assertHash(hash: string) {
   if (!/^[0-9a-f]{7,64}$/i.test(hash)) throw new GitCommandError('Invalid commit')
 }
@@ -431,10 +441,11 @@ export function loadRepo(repoPath: string): Promise<Result<RepoSnapshot>> {
   return wrap(async () => {
     const repo = await resolveRepo(repoPath)
     const [statusResult, logResult, branchResult, remoteResult] = await Promise.all([
-      runGit(repo, ['status', '--porcelain=v1', '-z', '-b', '-uall'], { check: true }),
+      runGit(repo, ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '-b', '-uall'], { check: true }),
       runGit(
         repo,
         [
+          '--no-optional-locks',
           'log',
           '--all',
           '--date-order',
@@ -444,10 +455,12 @@ export function loadRepo(repoPath: string): Promise<Result<RepoSnapshot>> {
         ],
         { check: false },
       ),
-      runGit(repo, ['branch', '-a', '--format=%(refname)%09%(objectname)%09%(HEAD)%09%(upstream:short)'], {
-        check: true,
-      }),
-      runGit(repo, ['remote'], { check: true }),
+      runGit(
+        repo,
+        ['--no-optional-locks', 'branch', '-a', '--format=%(refname)%09%(objectname)%09%(HEAD)%09%(upstream:short)'],
+        { check: true },
+      ),
+      runGit(repo, ['--no-optional-locks', 'remote'], { check: true }),
     ])
 
     let commits: Commit[] = []

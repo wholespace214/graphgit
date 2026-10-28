@@ -26,6 +26,7 @@ export type GraphGitApi = {
   fetch: (repoPath: string) => Promise<Result<string>>
   initRepo: (repoPath: string) => Promise<Result<string>>
   copyText: (text: string) => Promise<boolean>
+  watchRepo: (repoPath: string, cb: () => void) => () => void
   minimize: () => Promise<void>
   toggleMaximize: () => Promise<boolean>
   closeWindow: () => Promise<void>

@@ -17,6 +17,28 @@ type WorkSel = { path: string; staged: boolean }
 
 const CLONE_PARENT = 'graphgit.cloneParent'
 
+function repoSignature(snap: RepoSnapshot): string {
+  const header = snap.header
+  const commits = snap.commits
+    .map((commit) => `${commit.hash}:${commit.head ? 1 : 0}:${commit.refs.map((ref) => `${ref.kind}:${ref.name}:${ref.current ? 1 : 0}`).join(',')}`)
+    .join('\n')
+  const branches = snap.branches
+    .map((branch) => `${branch.remote ? 'r' : 'l'}:${branch.name}:${branch.hash}:${branch.current ? 1 : 0}:${branch.upstream ?? ''}`)
+    .join('\n')
+  const changes = snap.changes
+    .map((change) => `${change.path}\t${change.oldPath ?? ''}\t${change.index}${change.workTree}\t${change.staged ? 1 : 0}${change.unstaged ? 1 : 0}${change.untracked ? 1 : 0}${change.conflict ? 1 : 0}`)
+    .join('\n')
+  return [
+    snap.path,
+    `${header.name}|${header.detached ? 1 : 0}|${header.upstream ?? ''}|${header.ahead}|${header.behind}|${header.gone ? 1 : 0}|${header.empty ? 1 : 0}`,
+    snap.remotes.join('\n'),
+    snap.truncated ? '1' : '0',
+    commits,
+    branches,
+    changes,
+  ].join('\n---\n')
+}
+
 export function App() {
   const api = window.graphgit
   const [projects, setProjects] = useState<Project[]>([])
@@ -201,6 +223,52 @@ export function App() {
     [api, loadCommit, showError],
   )
 
+  const liveGen = useRef(0)
+  const liveRefresh = useCallback(async () => {
+    const current = snapRef.current
+    if (!current || busyRef.current) return
+    const generation = ++liveGen.current
+    const result = await api.loadRepo(current.path)
+    if (generation !== liveGen.current || busyRef.current || snapRef.current?.path !== current.path) return
+    if (!result.ok) return
+    if (repoSignature(current) === repoSignature(result.data)) return
+    setSnap(result.data)
+    const selection = workRef.current
+    if (panelRef.current === 'work' && selection) {
+      const before = current.changes.find((item) => item.path === selection.path)
+      const change = result.data.changes.find((item) => item.path === selection.path)
+      if (!change) {
+        setWorkSel(null)
+        return
+      }
+      let staged = selection.staged
+      if (staged && !change.staged && (change.unstaged || change.untracked)) staged = false
+      if (!staged && !change.unstaged && !change.untracked && change.staged) staged = true
+      const visible = staged ? change.staged : change.unstaged || change.untracked
+      if (!visible) {
+        setWorkSel(null)
+        return
+      }
+      const beforeKey = before ? `${before.index}${before.workTree}${before.staged}${before.unstaged}${before.untracked}` : ''
+      const afterKey = `${change.index}${change.workTree}${change.staged}${change.unstaged}${change.untracked}`
+      if (beforeKey === afterKey && staged === selection.staged) return
+      setWorkSel({ path: selection.path, staged })
+      const my = ++token.current
+      setDetailLoading(true)
+      const diff = await api.workingDiff(result.data.path, selection.path, staged)
+      if (my !== token.current || generation !== liveGen.current || busyRef.current) return
+      setDiffText(diff.ok ? diff.data : '')
+      setDetailError(diff.ok ? null : diff.error)
+      setDetailLoading(false)
+      return
+    }
+    const hash = hashRef.current
+    if (hash && result.data.commits.some((commit) => commit.hash === hash)) return
+    const head = result.data.commits.find((commit) => commit.head) ?? result.data.commits[0]
+    if (head) await loadCommit(result.data.path, head.hash, null)
+    else setSelectedHash(null)
+  }, [api, loadCommit])
+
   const runAction = useCallback(
     async (label: string, action: () => Promise<Result<string>>, mode: 'keep' | 'head') => {
       if (busyRef.current) return
@@ -259,6 +327,30 @@ export function App() {
   useEffect(() => {
     document.title = page === 'repo' && snap ? `GraphGit — ${baseName(snap.path)}` : 'GraphGit'
   }, [page, snap])
+
+  useEffect(() => {
+    if (page !== 'repo' || !snap?.path || !api.watchRepo) return
+    let timer = 0
+    let closed = false
+    const schedule = () => {
+      if (closed) return
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => {
+        if (closed) return
+        if (busyRef.current) {
+          schedule()
+          return
+        }
+        void liveRefresh()
+      }, 150)
+    }
+    const stop = api.watchRepo(snap.path, schedule)
+    return () => {
+      closed = true
+      window.clearTimeout(timer)
+      stop()
+    }
+  }, [api, liveRefresh, page, snap?.path])
 
   useEffect(() => {
     if (!branchModal) return
