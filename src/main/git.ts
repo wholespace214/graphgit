@@ -3,7 +3,7 @@ import { existsSync, statSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { cloneUrlError, folderNameError } from '../shared/clone'
-import type { BranchHeader, BranchInfo, Change, Commit, FileChange, RefChip, RepoSnapshot, Result } from '../shared/types'
+import type { BranchHeader, BranchInfo, Change, Commit, FileChange, PullRequest, RefChip, RepoSnapshot, Result, TagInfo } from '../shared/types'
 
 const LOG_LIMIT = 500
 const OUTPUT_CAP = 500_000
@@ -296,6 +296,34 @@ export function parseBranches(stdout: string): BranchInfo[] {
   return branches
 }
 
+export function parseTags(stdout: string): TagInfo[] {
+  const tags: TagInfo[] = []
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.trim()) continue
+    const [name, objectName, peeled] = line.split('\t')
+    if (!name || !objectName) continue
+    const commit = peeled || objectName
+    if (!/^[0-9a-f]{40}$/i.test(commit)) continue
+    tags.push({ name, commit, annotated: Boolean(peeled) })
+  }
+  return tags
+}
+
+export function githubSlugFromUrl(url: string): string | null {
+  const trimmed = url.trim()
+  const ssh = trimmed.match(/^git@github\.com:([^/\s]+)\/([^/\s]+?)(?:\.git)?$/i)
+  if (ssh?.[1] && ssh[2]) return `${ssh[1]}/${ssh[2]}`
+  try {
+    const parsed = new URL(trimmed)
+    if (!/^github\.com$/i.test(parsed.hostname)) return null
+    const parts = parsed.pathname.split('/').filter(Boolean)
+    if (parts.length < 2 || !parts[0] || !parts[1]) return null
+    return `${parts[0]}/${parts[1].replace(/\.git$/i, '')}`
+  } catch {
+    return null
+  }
+}
+
 export function parseNameStatusZ(stdout: string): FileChange[] {
   const parts = stdout
     .replace(/^\s+/, '')
@@ -440,7 +468,7 @@ async function untrackedPreview(repo: string, file: string): Promise<string> {
 export function loadRepo(repoPath: string): Promise<Result<RepoSnapshot>> {
   return wrap(async () => {
     const repo = await resolveRepo(repoPath)
-    const [statusResult, logResult, branchResult, remoteResult] = await Promise.all([
+    const [statusResult, logResult, branchResult, remoteResult, tagResult] = await Promise.all([
       runGit(repo, ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '-b', '-uall'], { check: true }),
       runGit(
         repo,
@@ -461,6 +489,17 @@ export function loadRepo(repoPath: string): Promise<Result<RepoSnapshot>> {
         { check: true },
       ),
       runGit(repo, ['--no-optional-locks', 'remote'], { check: true }),
+      runGit(
+        repo,
+        [
+          '--no-optional-locks',
+          'for-each-ref',
+          '--sort=-creatordate',
+          'refs/tags',
+          '--format=%(refname:short)%09%(objectname)%09%(*objectname)',
+        ],
+        { check: true },
+      ),
     ])
 
     let commits: Commit[] = []
@@ -483,7 +522,8 @@ export function loadRepo(repoPath: string): Promise<Result<RepoSnapshot>> {
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean)
-    return { path: repo, header, branches, commits, changes, remotes, truncated }
+    const tags = parseTags(tagResult.stdout)
+    return { path: repo, header, branches, tags, commits, changes, remotes, truncated }
   })
 }
 
@@ -632,6 +672,201 @@ export function deleteBranch(repoPath: string, name: string, force: boolean): Pr
     if (local.current) throw new GitCommandError('Switch to another branch before deleting this one')
     await runGit(repo, ['branch', force ? '-D' : '-d', '--', name], { check: true })
     return `Deleted ${name}`
+  })
+}
+
+function runGh(repo: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const child = spawn('gh', args, {
+      cwd: repo,
+      windowsHide: true,
+      env: { ...process.env, GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0' },
+    })
+    const out: Buffer[] = []
+    const err: Buffer[] = []
+    const timer = setTimeout(() => {
+      child.kill()
+      finish(() => reject(new GitCommandError('GitHub CLI took too long and was stopped.')))
+    }, 30_000)
+    const finish = (fn: () => void) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      fn()
+    }
+    child.stdout?.on('data', (chunk: Buffer) => out.push(chunk))
+    child.stderr?.on('data', (chunk: Buffer) => err.push(chunk))
+    child.on('error', (error: NodeJS.ErrnoException) => {
+      finish(() => {
+        reject(new GitCommandError(error.code === 'ENOENT' ? 'GitHub CLI (gh) is not installed or not on your PATH.' : error.message))
+      })
+    })
+    child.on('close', (code) => {
+      finish(() => {
+        resolve({
+          code: code ?? 1,
+          stdout: Buffer.concat(out).toString('utf8'),
+          stderr: Buffer.concat(err).toString('utf8'),
+        })
+      })
+    })
+    child.stdin?.end()
+  })
+}
+
+async function githubSlug(repo: string): Promise<string | null> {
+  const remotes = await listRemotes(repo)
+  const ordered = remotes.includes('origin') ? ['origin', ...remotes.filter((name) => name !== 'origin')] : remotes
+  for (const name of ordered) {
+    const url = await runGit(repo, ['remote', 'get-url', name], { check: false })
+    if (url.code !== 0) continue
+    const slug = githubSlugFromUrl(url.stdout.trim())
+    if (slug) return slug
+  }
+  return null
+}
+
+function parsePullRequestJson(stdout: string): PullRequest[] {
+  let data: unknown
+  try {
+    data = JSON.parse(stdout)
+  } catch {
+    throw new GitCommandError('GitHub CLI returned an unreadable pull request list')
+  }
+  if (!Array.isArray(data)) return []
+  const requests: PullRequest[] = []
+  for (const item of data) {
+    if (!item || typeof item !== 'object') continue
+    const row = item as Record<string, unknown>
+    const author = row.author
+    const login =
+      author && typeof author === 'object' && typeof (author as { login?: unknown }).login === 'string'
+        ? (author as { login: string }).login
+        : ''
+    if (typeof row.number !== 'number' || typeof row.title !== 'string' || typeof row.url !== 'string') continue
+    requests.push({
+      number: row.number,
+      title: row.title,
+      url: row.url,
+      head: typeof row.headRefName === 'string' ? row.headRefName : '',
+      base: typeof row.baseRefName === 'string' ? row.baseRefName : '',
+      author: login,
+    })
+  }
+  return requests
+}
+
+export function createTag(repoPath: string, name: string, message: string): Promise<Result<string>> {
+  return wrap(async () => {
+    const repo = await resolveRepo(repoPath)
+    assertNewBranchName(name)
+    const note = typeof message === 'string' ? message.trim() : ''
+    if (note.length > 20_000) throw new GitCommandError('Tag message is too long')
+    const tags = parseTags(
+      (await runGit(repo, ['for-each-ref', 'refs/tags', '--format=%(refname:short)%09%(objectname)%09%(*objectname)'], { check: true })).stdout,
+    )
+    if (tags.some((tag) => tag.name === name)) throw new GitCommandError(`Tag ${name} already exists`)
+    if (!note) {
+      await runGit(repo, ['tag', '--', name], { check: true })
+      return `Created tag ${name}`
+    }
+    const ident = await runGit(repo, ['log', '-1', '--format=%an%x1f%ae'], { check: true })
+    const [taggerName, taggerEmail] = ident.stdout.trim().split('\x1f')
+    if (!taggerName || !taggerEmail) throw new GitCommandError('The current commit has no author, so an annotated tag cannot be created')
+    await runGit(repo, ['-c', `user.name=${taggerName}`, '-c', `user.email=${taggerEmail}`, 'tag', '-a', name, '-m', note], { check: true })
+    return `Created tag ${name}`
+  })
+}
+
+export function deleteTag(repoPath: string, name: string): Promise<Result<string>> {
+  return wrap(async () => {
+    const repo = await resolveRepo(repoPath)
+    assertNewBranchName(name)
+    await runGit(repo, ['tag', '-d', '--', name], { check: true })
+    return `Deleted tag ${name}`
+  })
+}
+
+export function checkoutTag(repoPath: string, name: string): Promise<Result<string>> {
+  return wrap(async () => {
+    const repo = await resolveRepo(repoPath)
+    assertNewBranchName(name)
+    await runGit(repo, ['switch', '--detach', '--', name], { check: true })
+    return `Checked out tag ${name}`
+  })
+}
+
+export function pushTag(repoPath: string, name: string): Promise<Result<string>> {
+  return wrap(async () => {
+    const repo = await resolveRepo(repoPath)
+    assertNewBranchName(name)
+    const remotes = await listRemotes(repo)
+    if (remotes.length === 0) throw new GitCommandError('This repository has no remotes')
+    const remote = remotes.includes('origin') ? 'origin' : remotes[0]
+    if (!remote) throw new GitCommandError('This repository has no remotes')
+    const result = await runGit(repo, ['push', remote, `refs/tags/${name}`], { check: true, timeoutMs: 120_000 })
+    return outputText(result)
+  })
+}
+
+export function listPullRequests(repoPath: string): Promise<Result<{ requests: PullRequest[]; detail: string | null }>> {
+  return wrap(async () => {
+    const repo = await resolveRepo(repoPath)
+    const slug = await githubSlug(repo)
+    if (!slug) return { requests: [], detail: 'Pull requests need a GitHub remote.' }
+    try {
+      const result = await runGh(repo, [
+        'pr',
+        'list',
+        '--repo',
+        slug,
+        '--state',
+        'open',
+        '--limit',
+        '50',
+        '--json',
+        'number,title,url,headRefName,baseRefName,author',
+      ])
+      if (result.code !== 0) {
+        const text = (result.stderr || result.stdout || 'Could not list pull requests').trim()
+        return { requests: [], detail: text.slice(0, 500) }
+      }
+      return { requests: parsePullRequestJson(result.stdout), detail: null }
+    } catch (error) {
+      if (error instanceof GitCommandError && /not installed/i.test(error.message)) {
+        return { requests: [], detail: 'Install the GitHub CLI (gh) and sign in to see pull requests.' }
+      }
+      throw error
+    }
+  })
+}
+
+export function checkoutPullRequest(repoPath: string, number: number): Promise<Result<string>> {
+  return wrap(async () => {
+    if (!Number.isInteger(number) || number < 1 || number > 1_000_000) throw new GitCommandError('Invalid pull request')
+    const repo = await resolveRepo(repoPath)
+    const slug = await githubSlug(repo)
+    if (!slug) throw new GitCommandError('Pull requests need a GitHub remote')
+    const result = await runGh(repo, ['pr', 'checkout', String(number), '--repo', slug])
+    if (result.code !== 0) throw new GitCommandError(gitMessage(result.stderr, result.stdout))
+    return `Checked out pull request #${number}`
+  })
+}
+
+export function createPullRequest(repoPath: string, title: string, base: string): Promise<Result<string>> {
+  return wrap(async () => {
+    const repo = await resolveRepo(repoPath)
+    const text = title.trim()
+    if (!text || text.length > 256) throw new GitCommandError('Enter a pull request title')
+    assertNewBranchName(base)
+    const status = await readStatus(repo)
+    if (status.header.detached || status.header.empty) throw new GitCommandError('Checkout a branch before opening a pull request')
+    const slug = await githubSlug(repo)
+    if (!slug) throw new GitCommandError('Pull requests need a GitHub remote')
+    const result = await runGh(repo, ['pr', 'create', '--repo', slug, '--base', base, '--head', status.header.name, '--title', text, '--body', ''])
+    if (result.code !== 0) throw new GitCommandError(gitMessage(result.stderr, result.stdout))
+    return outputText(result) || `Opened pull request from ${status.header.name}`
   })
 }
 

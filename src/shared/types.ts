@@ -57,8 +57,29 @@ export type RepoSnapshot = {
   path: string
   header: BranchHeader
   branches: BranchInfo[]
+  tags: TagInfo[]
   commits: Commit[]
   changes: Change[]
   remotes: string[]
   truncated: boolean
+}
+
+export type TagInfo = {
+  name: string
+  commit: string
+  annotated: boolean
+}
+
+export type PullRequest = {
+  number: number
+  title: string
+  url: string
+  head: string
+  base: string
+  author: string
+}
+
+export type PullRequestList = {
+  requests: PullRequest[]
+  detail: string | null
 }

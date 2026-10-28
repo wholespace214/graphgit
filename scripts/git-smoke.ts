@@ -8,20 +8,26 @@ import { cloneUrlError, folderNameError, folderNameFromCloneUrl } from '../src/s
 import type { Commit } from '../src/shared/types'
 import {
   checkout,
+  checkoutTag,
   cloneRepo,
   commit,
   commitDiff,
   commitFiles,
   createBranch,
+  createTag,
   deleteBranch,
+  deleteTag,
   fetchRemote,
   initRepo,
+  listPullRequests,
   loadRepo,
   parseBranchHeader,
   parseBranches,
   parseLog,
   parseNameStatusZ,
   parseStatus,
+  parseTags,
+  githubSlugFromUrl,
   pull,
   stage,
   workingDiff,
@@ -103,6 +109,16 @@ function parserTests() {
   assert.equal(branches[0]?.current, true)
   assert.equal(branches[0]?.upstream, 'origin/main')
   assert.equal(branches[1]?.remote, true)
+  const tagCommit = 'c'.repeat(40)
+  const tagObject = 'd'.repeat(40)
+  const peeled = 'e'.repeat(40)
+  assert.deepEqual(parseTags(`v0.1.0\t${tagCommit}\t\nv1.0.0\t${tagObject}\t${peeled}\n`), [
+    { name: 'v0.1.0', commit: tagCommit, annotated: false },
+    { name: 'v1.0.0', commit: peeled, annotated: true },
+  ])
+  assert.equal(githubSlugFromUrl('git@github.com:acme/graphgit.git'), 'acme/graphgit')
+  assert.equal(githubSlugFromUrl('https://github.com/acme/graphgit'), 'acme/graphgit')
+  assert.equal(githubSlugFromUrl('https://gitlab.com/acme/graphgit.git'), null)
 
   assert.deepEqual(parseNameStatusZ('M\0src/app.ts\0A\0README.md\0'), [
     { status: 'M', path: 'src/app.ts' },
@@ -177,6 +193,7 @@ async function main() {
   assert.ok(opened.data.commits.length >= 6)
   assert.ok(opened.data.commits.some((commit) => commit.parents.length === 2))
   assert.ok(opened.data.commits.some((commit) => commit.head && commit.refs.some((ref) => ref.kind === 'tag')))
+  assert.ok(opened.data.tags.some((tag) => tag.name === 'v0.1.0'))
   assert.ok(opened.data.branches.some((branch) => branch.name === 'feature'))
   assert.equal(layoutCommits(opened.data.commits).length, opened.data.commits.length)
 
@@ -279,6 +296,20 @@ async function main() {
     assert.equal(removed.ok, true)
     const currentBranch = await deleteBranch(cloned.data, 'main', false)
     assert.equal(currentBranch.ok, false)
+    const tagged = await createTag(cloned.data, 'v9.9.9', 'Temporary tag')
+    assert.equal(tagged.ok, true, tagged.ok ? '' : tagged.error)
+    const withTag = await loadRepo(cloned.data)
+    assert.equal(withTag.ok, true)
+    if (withTag.ok) assert.ok(withTag.data.tags.some((tag) => tag.name === 'v9.9.9' && tag.annotated))
+    assert.equal((await checkoutTag(cloned.data, 'v9.9.9')).ok, true)
+    assert.equal((await checkout(cloned.data, 'main')).ok, true)
+    assert.equal((await deleteTag(cloned.data, 'v9.9.9')).ok, true)
+    const pulls = await listPullRequests(cloned.data)
+    assert.equal(pulls.ok, true)
+    if (pulls.ok) {
+      assert.equal(pulls.data.requests.length, 0)
+      assert.match(pulls.data.detail ?? '', /GitHub remote/)
+    }
   }
   const rejected = await cloneRepo('-bad', cloneParent, 'nope')
   assert.equal(rejected.ok, false)

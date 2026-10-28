@@ -4,17 +4,24 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   checkout,
+  checkoutPullRequest,
+  checkoutTag,
   cloneRepo,
   commit,
   commitDiff,
   commitFiles,
   createBranch,
+  createPullRequest,
+  createTag,
   deleteBranch,
+  deleteTag,
   fetchRemote,
   initRepo,
+  listPullRequests,
   loadRepo,
   pull,
   push,
+  pushTag,
   stage,
   stageAll,
   unstage,
@@ -197,6 +204,17 @@ function registerIpc() {
   handle('repo:create-branch', (repoPath, name) => createBranch(String(repoPath ?? ''), String(name ?? '')))
   handle('repo:delete-branch', (repoPath, name, force) =>
     deleteBranch(String(repoPath ?? ''), String(name ?? ''), Boolean(force)),
+  )
+  handle('repo:create-tag', (repoPath, name, message) =>
+    createTag(String(repoPath ?? ''), String(name ?? ''), String(message ?? '')),
+  )
+  handle('repo:delete-tag', (repoPath, name) => deleteTag(String(repoPath ?? ''), String(name ?? '')))
+  handle('repo:checkout-tag', (repoPath, name) => checkoutTag(String(repoPath ?? ''), String(name ?? '')))
+  handle('repo:push-tag', (repoPath, name) => pushTag(String(repoPath ?? ''), String(name ?? '')))
+  handle('repo:pull-requests', (repoPath) => listPullRequests(String(repoPath ?? '')))
+  handle('repo:checkout-pr', (repoPath, number) => checkoutPullRequest(String(repoPath ?? ''), Number(number)))
+  handle('repo:create-pr', (repoPath, title, base) =>
+    createPullRequest(String(repoPath ?? ''), String(title ?? ''), String(base ?? '')),
   )
   handle('repo:clone', (url, parentDir, folderName) =>
     cloneRepo(String(url ?? ''), String(parentDir ?? ''), String(folderName ?? '')),

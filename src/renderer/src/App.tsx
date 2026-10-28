@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Change, FileChange, RepoSnapshot } from '@shared/types'
+import type { Change, FileChange, PullRequest, RepoSnapshot } from '@shared/types'
 import type { Result } from '@shared/types'
-import { BranchList } from './components/BranchList'
 import { BranchModal } from './components/BranchModal'
 import { CloneModal } from './components/CloneModal'
 import { CommitGraph } from './components/CommitGraph'
 import { Composer } from './components/Composer'
 import { Detail } from './components/Detail'
 import { ProjectsPage } from './components/ProjectsPage'
+import { PullRequestModal } from './components/PullRequestModal'
+import { RepoSide, type SideTab } from './components/RepoSide'
+import { TagModal } from './components/TagModal'
 import { Toolbar } from './components/Toolbar'
 import { baseName } from './format'
 import { forgetProject, readProjects, rememberProject, toggleFavorite, type Project } from './projects'
@@ -33,6 +35,7 @@ function repoSignature(snap: RepoSnapshot): string {
     `${header.name}|${header.detached ? 1 : 0}|${header.upstream ?? ''}|${header.ahead}|${header.behind}|${header.gone ? 1 : 0}|${header.empty ? 1 : 0}`,
     snap.remotes.join('\n'),
     snap.truncated ? '1' : '0',
+    snap.tags.map((tag) => `${tag.name}:${tag.commit}:${tag.annotated ? 1 : 0}`).join('\n'),
     commits,
     branches,
     changes,
@@ -61,7 +64,16 @@ export function App() {
   const [message, setMessage] = useState('')
   const [branchModal, setBranchModal] = useState(false)
   const [branchName, setBranchName] = useState('')
+  const [tagModal, setTagModal] = useState(false)
+  const [tagName, setTagName] = useState('')
+  const [tagMessage, setTagMessage] = useState('')
+  const [prModal, setPrModal] = useState(false)
+  const [prTitle, setPrTitle] = useState('')
+  const [prBase, setPrBase] = useState('main')
   const [modalError, setModalError] = useState<string | null>(null)
+  const [side, setSide] = useState<SideTab>('branches')
+  const [pulls, setPulls] = useState<PullRequest[]>([])
+  const [pullDetail, setPullDetail] = useState<string | null>(null)
   const [cloneOpen, setCloneOpen] = useState(false)
   const [cloneUrl, setCloneUrl] = useState('')
   const [cloneFolder, setCloneFolder] = useState('repository')
@@ -149,6 +161,7 @@ export function App() {
         setPendingInit(null)
         setPage('repo')
         setSnap(result.data)
+        setSide('branches')
         setQuery('')
         setMessage('')
         setWorkSel(null)
@@ -353,13 +366,37 @@ export function App() {
   }, [api, liveRefresh, page, snap?.path])
 
   useEffect(() => {
-    if (!branchModal) return
+    if (!branchModal && !tagModal && !prModal) return
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setBranchModal(false)
+      if (event.key !== 'Escape') return
+      setBranchModal(false)
+      setTagModal(false)
+      setPrModal(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [branchModal])
+  }, [branchModal, tagModal, prModal])
+
+  const loadPulls = useCallback(async () => {
+    const current = snapRef.current
+    if (!current) return
+    const result = await api.listPullRequests(current.path)
+    if (snapRef.current?.path !== current.path) return
+    if (!result.ok) {
+      setPulls([])
+      setPullDetail(result.error)
+      return
+    }
+    setPulls(result.data.requests)
+    setPullDetail(result.data.detail)
+  }, [api])
+
+  useEffect(() => {
+    if (page !== 'repo' || side !== 'pulls' || !snap?.path) return
+    void loadPulls()
+    const timer = window.setInterval(() => void loadPulls(), 20_000)
+    return () => window.clearInterval(timer)
+  }, [loadPulls, page, side, snap?.path])
 
   async function selectFile(file: string) {
     const current = snapRef.current
@@ -412,6 +449,69 @@ export function App() {
       setModalError(null)
       showOk(result.data)
       await reload('head')
+    } finally {
+      busyRef.current = false
+      setBusy(null)
+    }
+  }
+
+  async function onCreateTag() {
+    const current = snapRef.current
+    if (!current || busyRef.current) return
+    const name = tagName.trim()
+    if (!name) {
+      setModalError('Enter a tag name')
+      return
+    }
+    busyRef.current = true
+    setBusy('Creating tag')
+    try {
+      const result = await api.createTag(current.path, name, tagMessage)
+      if (!result.ok) {
+        setModalError(result.error)
+        return
+      }
+      setTagModal(false)
+      setTagName('')
+      setTagMessage('')
+      setModalError(null)
+      showOk(result.data)
+      await reload('keep')
+    } finally {
+      busyRef.current = false
+      setBusy(null)
+    }
+  }
+
+  async function onDeleteTag(name: string) {
+    const current = snapRef.current
+    if (!current || busyRef.current) return
+    if (!window.confirm(`Delete tag "${name}"?`)) return
+    await runAction('Deleting tag', () => api.deleteTag(current.path, name), 'keep')
+  }
+
+  async function onCreatePullRequest() {
+    const current = snapRef.current
+    if (!current || busyRef.current) return
+    const title = prTitle.trim()
+    const base = prBase.trim()
+    if (!title || !base) {
+      setModalError('Enter a title and a base branch')
+      return
+    }
+    busyRef.current = true
+    setBusy('Opening pull request')
+    try {
+      const result = await api.createPullRequest(current.path, title, base)
+      if (!result.ok) {
+        setModalError(result.error)
+        return
+      }
+      setPrModal(false)
+      setPrTitle('')
+      setModalError(null)
+      showOk(result.data)
+      await loadPulls()
     } finally {
       busyRef.current = false
       setBusy(null)
@@ -556,15 +656,42 @@ export function App() {
           )}
           <div className="workspace">
             <aside className="sidebar">
-              <BranchList
+              <RepoSide
+                tab={side}
+                onTab={setSide}
                 branches={snap.branches}
+                tags={snap.tags ?? []}
+                head={snap.commits.find((commit) => commit.head)?.hash ?? null}
+                detached={snap.header.detached}
+                pulls={pulls}
+                pullDetail={pullDetail}
                 busy={Boolean(busy)}
+                canPush={snap.remotes.length > 0}
                 onCheckout={(name) => void runAction('Switching branch', () => api.checkout(snap.path, name), 'head')}
                 onNewBranch={() => {
                   setModalError(null)
                   setBranchModal(true)
                 }}
-                onDelete={(name) => void onDeleteBranch(name)}
+                onDeleteBranch={(name) => void onDeleteBranch(name)}
+                onCheckoutTag={(name) => void runAction('Checking out tag', () => api.checkoutTag(snap.path, name), 'head')}
+                onNewTag={() => {
+                  setModalError(null)
+                  setTagModal(true)
+                }}
+                onDeleteTag={(name) => void onDeleteTag(name)}
+                onPushTag={(name) => void runAction('Pushing tag', () => api.pushTag(snap.path, name), 'keep')}
+                onCheckoutPull={(number) =>
+                  void runAction('Checking out pull request', async () => {
+                    const result = await api.checkoutPullRequest(snap.path, number)
+                    if (result.ok) await loadPulls()
+                    return result
+                  }, 'head')
+                }
+                onNewPull={() => {
+                  setModalError(null)
+                  setPrBase('main')
+                  setPrModal(true)
+                }}
               />
             </aside>
             <CommitGraph
@@ -627,6 +754,30 @@ export function App() {
               onName={setBranchName}
               onClose={() => setBranchModal(false)}
               onSubmit={() => void onCreateBranch()}
+            />
+          )}
+          {tagModal && (
+            <TagModal
+              name={tagName}
+              message={tagMessage}
+              error={modalError}
+              busy={Boolean(busy)}
+              onName={setTagName}
+              onMessage={setTagMessage}
+              onClose={() => setTagModal(false)}
+              onSubmit={() => void onCreateTag()}
+            />
+          )}
+          {prModal && (
+            <PullRequestModal
+              title={prTitle}
+              base={prBase}
+              error={modalError}
+              busy={Boolean(busy)}
+              onTitle={setPrTitle}
+              onBase={setPrBase}
+              onClose={() => setPrModal(false)}
+              onSubmit={() => void onCreatePullRequest()}
             />
           )}
         </>
