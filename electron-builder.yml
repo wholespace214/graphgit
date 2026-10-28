@@ -46,6 +46,8 @@ mac:
 linux:
   icon: resources/icon.png
   category: Development
+  maintainer: wholespace214 <wholespace214@users.noreply.github.com>
+  syncDesktopName: true
   target:
     - target: AppImage
       arch:

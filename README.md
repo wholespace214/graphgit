@@ -26,7 +26,7 @@ Installers are published on [GitHub Releases](https://github.com/wholespace214/g
 | --- | --- |
 | Windows | `GraphGit-Setup-<version>.exe`, or `GraphGit-<version>-portable.exe` |
 | macOS | `GraphGit-<version>-mac-<arch>.dmg` |
-| Linux | `GraphGit-<version>-linux-<arch>.AppImage` or `.deb` |
+| Linux | `GraphGit-<version>-linux-x86_64.AppImage` or `GraphGit-<version>-linux-amd64.deb` |
 
 These builds are not code-signed. Windows SmartScreen and macOS Gatekeeper can ask you to confirm the app before it opens.
 
@@ -49,13 +49,17 @@ npm run dist
 
 `npm run dist` writes installers for the current system into `release/`.
 
+## Test before a tag
+
+The Test workflow runs on every push to `main` and on pull requests. It typechecks the app, runs the smoke test, and builds the Windows, macOS, and Linux installers. It does not publish a release. Wait until that workflow is green before creating a tag.
+
 ## Make a release
 
-Push a version tag. The Release workflow typechecks the app, runs the smoke test, builds Windows, macOS, and Linux installers, and publishes them to a GitHub Release for that tag.
+After Test is green on `main`, push a version tag. The Release workflow runs the same checks, builds the installers again, and publishes them to a GitHub Release for that tag.
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The tag must look like `vX.Y.Z`. The workflow sets the packaged version from the tag. Running the workflow by hand, without a tag, builds the installers and keeps them as workflow artifacts. It does not publish a release.
+The tag must look like `vX.Y.Z`. The workflow sets the packaged version from the tag. Running the Release workflow by hand, without a tag, builds the installers and keeps them as workflow artifacts. It does not publish a release.

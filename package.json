@@ -4,7 +4,16 @@
   "version": "0.1.0",
   "private": true,
   "description": "A visual Git client for commits, branches, diffs, and remotes.",
-  "author": "wholespace214",
+  "author": {
+    "name": "wholespace214",
+    "email": "wholespace214@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/wholespace214/graphgit",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wholespace214/graphgit.git"
+  },
+  "desktopName": "graphgit",
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
