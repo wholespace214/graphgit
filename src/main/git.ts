@@ -3,7 +3,7 @@ import { existsSync, statSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { cloneUrlError, folderNameError } from '../shared/clone'
-import type { BranchHeader, BranchInfo, Change, Commit, FileChange, PullRequest, RefChip, RepoSnapshot, Result, TagInfo } from '../shared/types'
+import type { BranchHeader, BranchInfo, Change, Commit, Contributor, FileChange, PullRequest, RefChip, RemoteTag, RemoteTagList, RepoSnapshot, Result, TagInfo } from '../shared/types'
 
 const LOG_LIMIT = 500
 const OUTPUT_CAP = 500_000
@@ -271,6 +271,51 @@ export function parseLog(stdout: string): Commit[] {
   return commits
 }
 
+export function parseContributors(stdout: string, selfEmail: string): Contributor[] {
+  const self = selfEmail.trim().toLowerCase()
+  const seen = new Set<string>()
+  const people: Contributor[] = []
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.trim()) continue
+    const splitAt = line.indexOf('\x1f')
+    if (splitAt <= 0) continue
+    const name = line.slice(0, splitAt).trim()
+    const email = line.slice(splitAt + 1).trim()
+    if (!name || !email || name.length > 100 || email.length > 200) continue
+    if (/[\r\n<>]/.test(name) || /[\r\n<>\s]/.test(email) || !email.includes('@')) continue
+    const key = email.toLowerCase()
+    if (key === self || seen.has(key)) continue
+    seen.add(key)
+    people.push({ name, email })
+  }
+  people.sort((a, b) => a.name.localeCompare(b.name) || a.email.localeCompare(b.email))
+  return people
+}
+
+export function formatCommitMessage(message: string, people: Contributor[]): string {
+  const text = message.trim()
+  if (people.length === 0) return `${text}\n`
+  const trailers = people.map((person) => `Co-authored-by: ${person.name} <${person.email}>`)
+  return `${text}\n\n${trailers.join('\n')}\n`
+}
+
+function commitPartners(value: unknown): Contributor[] {
+  if (value == null) return []
+  if (!Array.isArray(value)) throw new GitCommandError('Invalid person')
+  if (value.length > 12) throw new GitCommandError('Too many people on this commit')
+  const lines: string[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') throw new GitCommandError('Invalid person')
+    const name = (item as { name?: unknown }).name
+    const email = (item as { email?: unknown }).email
+    if (typeof name !== 'string' || typeof email !== 'string') throw new GitCommandError('Invalid person')
+    lines.push(`${name}\x1f${email}`)
+  }
+  const people = parseContributors(lines.join('\n'), '')
+  if (people.length !== value.length) throw new GitCommandError('Enter a name and email for each person')
+  return people
+}
+
 export function parseBranches(stdout: string): BranchInfo[] {
   const branches: BranchInfo[] = []
   for (const line of stdout.split(/\r?\n/)) {
@@ -307,6 +352,25 @@ export function parseTags(stdout: string): TagInfo[] {
     tags.push({ name, commit, annotated: Boolean(peeled) })
   }
   return tags
+}
+
+export function parseRemoteTags(stdout: string): RemoteTag[] {
+  const byName = new Map<string, RemoteTag>()
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.trim()) continue
+    const tab = line.indexOf('\t')
+    if (tab <= 0) continue
+    const oid = line.slice(0, tab).trim()
+    const ref = line.slice(tab + 1).trim()
+    if (!ref.startsWith('refs/tags/')) continue
+    if (!/^[0-9a-f]{40}$/i.test(oid)) continue
+    const peeled = ref.endsWith('^{}')
+    const name = (peeled ? ref.slice(0, -3) : ref).slice('refs/tags/'.length)
+    if (!isSafeTagName(name)) continue
+    const existing = byName.get(name)
+    if (!existing || peeled) byName.set(name, { name, commit: oid })
+  }
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name))
 }
 
 export function githubSlugFromUrl(url: string): string | null {
@@ -422,6 +486,15 @@ function assertNewBranchName(name: string) {
   if (!/^[\p{L}\p{N}._/-]+$/u.test(name)) throw new GitCommandError('Invalid branch name')
 }
 
+function isSafeTagName(name: string): boolean {
+  try {
+    assertNewBranchName(name)
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function readStatus(repo: string) {
   const result = await runGit(repo, ['status', '--porcelain=v1', '-z', '-b', '-uall'], { check: true })
   return parseStatus(result.stdout)
@@ -468,7 +541,7 @@ async function untrackedPreview(repo: string, file: string): Promise<string> {
 export function loadRepo(repoPath: string): Promise<Result<RepoSnapshot>> {
   return wrap(async () => {
     const repo = await resolveRepo(repoPath)
-    const [statusResult, logResult, branchResult, remoteResult, tagResult] = await Promise.all([
+    const [statusResult, logResult, branchResult, remoteResult, tagResult, peopleResult, emailResult] = await Promise.all([
       runGit(repo, ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '-b', '-uall'], { check: true }),
       runGit(
         repo,
@@ -500,6 +573,8 @@ export function loadRepo(repoPath: string): Promise<Result<RepoSnapshot>> {
         ],
         { check: true },
       ),
+      runGit(repo, ['--no-optional-locks', 'log', '--all', '-n', '500', '--format=%an%x1f%ae'], { check: false }),
+      runGit(repo, ['config', '--get', 'user.email'], { check: false }),
     ])
 
     let commits: Commit[] = []
@@ -523,7 +598,8 @@ export function loadRepo(repoPath: string): Promise<Result<RepoSnapshot>> {
       .map((line) => line.trim())
       .filter(Boolean)
     const tags = parseTags(tagResult.stdout)
-    return { path: repo, header, branches, tags, commits, changes, remotes, truncated }
+    const contributors = peopleResult.code === 0 ? parseContributors(peopleResult.stdout, emailResult.code === 0 ? emailResult.stdout : '') : []
+    return { path: repo, header, branches, tags, commits, changes, remotes, contributors, truncated }
   })
 }
 
@@ -604,17 +680,21 @@ export function unstageAll(repoPath: string): Promise<Result<string>> {
   })
 }
 
-export function commit(repoPath: string, message: string): Promise<Result<string>> {
+export function commit(repoPath: string, message: string, withUsers?: unknown): Promise<Result<string>> {
   return wrap(async () => {
     const repo = await resolveRepo(repoPath)
     if (typeof message !== 'string' || message.trim().length === 0) throw new GitCommandError('Commit message is empty')
     if (message.length > 100_000) throw new GitCommandError('Commit message is too long')
+    const people = commitPartners(withUsers)
     const status = await readStatus(repo)
     if (status.changes.some((change) => change.conflict)) {
       throw new GitCommandError('Resolve conflicts before committing')
     }
-    if (!status.changes.some((change) => change.staged)) throw new GitCommandError('Stage at least one file')
-    await runGit(repo, ['commit', '-F', '-'], { stdin: `${message.trim()}\n`, check: true })
+    const staged = status.changes.some((change) => change.staged)
+    const pending = status.changes.some((change) => change.unstaged || change.untracked)
+    if (!staged && !pending) throw new GitCommandError('Nothing to commit')
+    if (!staged) await runGit(repo, ['add', '-A'], { check: true })
+    await runGit(repo, ['commit', '-F', '-'], { stdin: formatCommitMessage(message, people), check: true })
     return 'Commit created'
   })
 }
@@ -792,8 +872,30 @@ export function checkoutTag(repoPath: string, name: string): Promise<Result<stri
   return wrap(async () => {
     const repo = await resolveRepo(repoPath)
     assertNewBranchName(name)
+    const exists = await runGit(repo, ['show-ref', '--verify', '--quiet', `refs/tags/${name}`], { check: false })
+    if (exists.code !== 0) {
+      const remotes = await listRemotes(repo)
+      const remote = remotes.includes('origin') ? 'origin' : remotes[0]
+      if (!remote) throw new GitCommandError(`Tag ${name} was not found`)
+      await runGit(repo, ['fetch', remote, 'tag', name], { check: true, timeoutMs: 120_000 })
+    }
     await runGit(repo, ['switch', '--detach', '--', name], { check: true })
     return `Checked out tag ${name}`
+  })
+}
+
+export function listRemoteTags(repoPath: string): Promise<Result<RemoteTagList>> {
+  return wrap(async () => {
+    const repo = await resolveRepo(repoPath)
+    const remotes = await listRemotes(repo)
+    const remote = remotes.includes('origin') ? 'origin' : remotes[0]
+    if (!remote) return { remote: null, tags: [], detail: null }
+    const result = await runGit(repo, ['ls-remote', '--tags', remote], { check: false, timeoutMs: 20_000 })
+    if (result.code !== 0) {
+      const text = (result.stderr || result.stdout || 'Could not read remote tags').trim()
+      return { remote, tags: [], detail: text.slice(0, 500) }
+    }
+    return { remote, tags: parseRemoteTags(result.stdout), detail: null }
   })
 }
 

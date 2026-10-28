@@ -18,6 +18,7 @@ import {
   fetchRemote,
   initRepo,
   listPullRequests,
+  listRemoteTags,
   loadRepo,
   pull,
   push,
@@ -199,7 +200,9 @@ function registerIpc() {
   handle('repo:unstage', (repoPath, paths) => unstage(String(repoPath ?? ''), Array.isArray(paths) ? paths.map(String) : []))
   handle('repo:stage-all', (repoPath) => stageAll(String(repoPath ?? '')))
   handle('repo:unstage-all', (repoPath) => unstageAll(String(repoPath ?? '')))
-  handle('repo:commit', (repoPath, message) => commit(String(repoPath ?? ''), String(message ?? '')))
+  handle('repo:commit', (repoPath, message, withUsers) =>
+    commit(String(repoPath ?? ''), String(message ?? ''), withUsers),
+  )
   handle('repo:checkout', (repoPath, name) => checkout(String(repoPath ?? ''), String(name ?? '')))
   handle('repo:create-branch', (repoPath, name) => createBranch(String(repoPath ?? ''), String(name ?? '')))
   handle('repo:delete-branch', (repoPath, name, force) =>
@@ -211,6 +214,7 @@ function registerIpc() {
   handle('repo:delete-tag', (repoPath, name) => deleteTag(String(repoPath ?? ''), String(name ?? '')))
   handle('repo:checkout-tag', (repoPath, name) => checkoutTag(String(repoPath ?? ''), String(name ?? '')))
   handle('repo:push-tag', (repoPath, name) => pushTag(String(repoPath ?? ''), String(name ?? '')))
+  handle('repo:remote-tags', (repoPath) => listRemoteTags(String(repoPath ?? '')))
   handle('repo:pull-requests', (repoPath) => listPullRequests(String(repoPath ?? '')))
   handle('repo:checkout-pr', (repoPath, number) => checkoutPullRequest(String(repoPath ?? ''), Number(number)))
   handle('repo:create-pr', (repoPath, title, base) =>

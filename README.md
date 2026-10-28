@@ -2,6 +2,8 @@
 
 GraphGit is a desktop Git client. It shows commit history as a graph, and it opens, clones, and updates repositories with the Git already installed on your machine.
 
+![GraphGit, with the commit graph open](docs/app.png)
+
 ## What you can do
 
 - Keep a project list, with favorites and recent repositories

@@ -20,13 +20,18 @@ import {
   fetchRemote,
   initRepo,
   listPullRequests,
+  listRemoteTags,
   loadRepo,
   parseBranchHeader,
   parseBranches,
+  formatCommitMessage,
+  parseContributors,
   parseLog,
   parseNameStatusZ,
+  parseRemoteTags,
   parseStatus,
   parseTags,
+  pushTag,
   githubSlugFromUrl,
   pull,
   stage,
@@ -116,6 +121,20 @@ function parserTests() {
     { name: 'v0.1.0', commit: tagCommit, annotated: false },
     { name: 'v1.0.0', commit: peeled, annotated: true },
   ])
+  assert.deepEqual(
+    parseRemoteTags(`${tagObject}\trefs/tags/v1.0.0\n${peeled}\trefs/tags/v1.0.0^{}\n${tagCommit}\trefs/tags/v0.9.0\n`),
+    [
+      { name: 'v0.9.0', commit: tagCommit },
+      { name: 'v1.0.0', commit: peeled },
+    ],
+  )
+  assert.equal(
+    formatCommitMessage('Ship it', [{ name: 'Ada Lovelace', email: 'ada@example.com' }]),
+    'Ship it\n\nCo-authored-by: Ada Lovelace <ada@example.com>\n',
+  )
+  assert.deepEqual(parseContributors(`Ada Lovelace\x1fada@example.com\nAda Lovelace\x1fada@example.com\nYou\x1fyou@example.com\n`, 'you@example.com'), [
+    { name: 'Ada Lovelace', email: 'ada@example.com' },
+  ])
   assert.equal(githubSlugFromUrl('git@github.com:acme/graphgit.git'), 'acme/graphgit')
   assert.equal(githubSlugFromUrl('https://github.com/acme/graphgit'), 'acme/graphgit')
   assert.equal(githubSlugFromUrl('https://gitlab.com/acme/graphgit.git'), null)
@@ -177,6 +196,7 @@ async function buildDemo() {
   demoGit(demo, ['add', 'RELEASE.md'])
   demoGit(demo, ['commit', '-m', 'Prepare release'])
   demoGit(demo, ['tag', 'v0.1.0'])
+  demoGit(remote, ['tag', 'v0.0.1'])
 }
 
 async function main() {
@@ -194,6 +214,27 @@ async function main() {
   assert.ok(opened.data.commits.some((commit) => commit.parents.length === 2))
   assert.ok(opened.data.commits.some((commit) => commit.head && commit.refs.some((ref) => ref.kind === 'tag')))
   assert.ok(opened.data.tags.some((tag) => tag.name === 'v0.1.0'))
+  const remoteTags = await listRemoteTags(demo)
+  assert.equal(remoteTags.ok, true, remoteTags.ok ? '' : remoteTags.error)
+  if (remoteTags.ok) {
+    assert.equal(remoteTags.data.remote, 'origin')
+    assert.equal(remoteTags.data.detail, null)
+    assert.ok(remoteTags.data.tags.some((tag) => tag.name === 'v0.0.1'))
+    assert.equal(
+      remoteTags.data.tags.some((tag) => tag.name === 'v0.1.0'),
+      false,
+    )
+  }
+  assert.equal((await checkoutTag(demo, 'v0.0.1')).ok, true)
+  assert.equal((await checkout(demo, 'main')).ok, true)
+  const pushedTag = await pushTag(demo, 'v0.1.0')
+  assert.equal(pushedTag.ok, true, pushedTag.ok ? '' : pushedTag.error)
+  const afterPush = await listRemoteTags(demo)
+  assert.equal(afterPush.ok, true, afterPush.ok ? '' : afterPush.error)
+  if (afterPush.ok) {
+    assert.ok(afterPush.data.tags.some((tag) => tag.name === 'v0.1.0'))
+    assert.ok(afterPush.data.tags.some((tag) => tag.name === 'v0.0.1'))
+  }
   assert.ok(opened.data.branches.some((branch) => branch.name === 'feature'))
   assert.equal(layoutCommits(opened.data.commits).length, opened.data.commits.length)
 
@@ -274,6 +315,28 @@ async function main() {
   const committed = await commit(commitDir, 'Test commit')
   if (committed.ok) assert.equal(committed.data, 'Commit created')
   else assert.ok(committed.error.length > 0)
+
+  const looseDir = path.join(tmpdir(), 'graphgit-commit-unstaged')
+  await rm(looseDir, { recursive: true, force: true })
+  await mkdir(looseDir)
+  assert.equal((await initRepo(looseDir)).ok, true)
+  await writeFile(path.join(looseDir, 'loose.txt'), 'loose\n')
+  const loose = await commit(looseDir, 'Commit working tree')
+  const looseRepo = await loadRepo(looseDir)
+  assert.equal(looseRepo.ok, true)
+  if (looseRepo.ok) {
+    if (loose.ok) {
+      assert.equal(loose.data, 'Commit created')
+      assert.equal(looseRepo.data.changes.length, 0)
+      assert.ok(looseRepo.data.commits.some((commit) => commit.subject === 'Commit working tree'))
+    } else {
+      assert.doesNotMatch(loose.error, /Stage at least one file/)
+      assert.equal(
+        looseRepo.data.changes.some((change) => change.path === 'loose.txt' && change.staged),
+        true,
+      )
+    }
+  }
 
   assert.equal(folderNameFromCloneUrl('https://github.com/acme/graphgit.git'), 'graphgit')
   assert.equal(cloneUrlError('-evil'), 'That URL cannot be cloned')

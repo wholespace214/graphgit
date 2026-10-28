@@ -1,6 +1,8 @@
 import type { BranchHeader } from '@shared/types'
 import { baseName } from '../format'
+import { BackButton } from './BackButton'
 import { Logo } from './Logo'
+import { SettingsButton } from './SettingsButton'
 import { WindowControls } from './WindowControls'
 
 export function Toolbar({
@@ -14,6 +16,7 @@ export function Toolbar({
   onFetch,
   onPull,
   onPush,
+  onSettings,
 }: {
   path: string
   header: BranchHeader
@@ -25,6 +28,7 @@ export function Toolbar({
   onFetch: () => void
   onPull: () => void
   onPush: () => void
+  onSettings: () => void
 }) {
   const noRemote = remotes.length === 0
   const fetchTitle = noRemote ? 'This repository has no remotes' : 'Fetch'
@@ -61,13 +65,12 @@ export function Toolbar({
         {header.ahead > 0 && <span className="sync ahead">{header.ahead} ahead</span>}
         {header.behind > 0 && <span className="sync behind">{header.behind} behind</span>}
         <div className="spacer" />
+        <SettingsButton onClick={onSettings} disabled={Boolean(busy)} />
         {busy && <span className="busy-label">{busy}</span>}
         <WindowControls />
       </div>
       <div className="chrome-actions">
-        <button className="ghost" onClick={onProjects} disabled={Boolean(busy)}>
-          Projects
-        </button>
+        <BackButton onClick={onProjects} disabled={Boolean(busy)} title="Back to projects" label="Back" />
         <div className="spacer" />
         <button className="ghost" onClick={onRefresh} disabled={Boolean(busy)}>
           Refresh

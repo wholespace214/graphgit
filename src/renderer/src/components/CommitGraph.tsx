@@ -131,7 +131,7 @@ function GraphCell({
         return <path key={`edge-${index}`} d={path} stroke={stroke} fill="none" />
       })}
       {row.commit.head && <circle cx={x(row.col)} cy={mid} r={8} fill="none" stroke={color} strokeWidth={1.5} />}
-      <circle cx={x(row.col)} cy={mid} r={selected ? 5 : 4} fill={selected ? '#ffffff' : color} />
+      <circle cx={x(row.col)} cy={mid} r={selected ? 5 : 4} fill={selected ? 'var(--text)' : color} />
     </svg>
   )
 }

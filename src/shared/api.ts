@@ -1,4 +1,4 @@
-import type { FileChange, PullRequestList, RepoSnapshot, Result } from './types'
+import type { Contributor, FileChange, PullRequestList, RemoteTagList, RepoSnapshot, Result } from './types'
 
 export type CommitFiles = {
   files: FileChange[]
@@ -16,7 +16,7 @@ export type GraphGitApi = {
   unstage: (repoPath: string, paths: string[]) => Promise<Result<string>>
   stageAll: (repoPath: string) => Promise<Result<string>>
   unstageAll: (repoPath: string) => Promise<Result<string>>
-  commit: (repoPath: string, message: string) => Promise<Result<string>>
+  commit: (repoPath: string, message: string, withUsers: Contributor[]) => Promise<Result<string>>
   checkout: (repoPath: string, name: string) => Promise<Result<string>>
   createBranch: (repoPath: string, name: string) => Promise<Result<string>>
   deleteBranch: (repoPath: string, name: string, force: boolean) => Promise<Result<string>>
@@ -24,6 +24,7 @@ export type GraphGitApi = {
   deleteTag: (repoPath: string, name: string) => Promise<Result<string>>
   checkoutTag: (repoPath: string, name: string) => Promise<Result<string>>
   pushTag: (repoPath: string, name: string) => Promise<Result<string>>
+  listRemoteTags: (repoPath: string) => Promise<Result<RemoteTagList>>
   listPullRequests: (repoPath: string) => Promise<Result<PullRequestList>>
   checkoutPullRequest: (repoPath: string, number: number) => Promise<Result<string>>
   createPullRequest: (repoPath: string, title: string, base: string) => Promise<Result<string>>

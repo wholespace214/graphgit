@@ -1,4 +1,4 @@
-import type { BranchInfo, PullRequest, TagInfo } from '@shared/types'
+import type { BranchInfo, PullRequest, RemoteTag, TagInfo } from '@shared/types'
 import { BranchList } from './BranchList'
 import { PullRequestList } from './PullRequestList'
 import { TagList } from './TagList'
@@ -10,6 +10,10 @@ export function RepoSide({
   onTab,
   branches,
   tags,
+  remoteTags,
+  remoteName,
+  remoteDetail,
+  remoteReady,
   head,
   detached,
   pulls,
@@ -30,6 +34,10 @@ export function RepoSide({
   onTab: (tab: SideTab) => void
   branches: BranchInfo[]
   tags: TagInfo[]
+  remoteTags: RemoteTag[]
+  remoteName: string | null
+  remoteDetail: string | null
+  remoteReady: boolean
   head: string | null
   detached: boolean
   pulls: PullRequest[]
@@ -66,6 +74,10 @@ export function RepoSide({
         {tab === 'tags' && (
           <TagList
             tags={tags}
+            remoteTags={remoteTags}
+            remoteName={remoteName}
+            remoteDetail={remoteDetail}
+            remoteReady={remoteReady}
             head={head}
             detached={detached}
             busy={busy}

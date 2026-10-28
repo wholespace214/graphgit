@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Change, FileChange, PullRequest, RepoSnapshot } from '@shared/types'
+import type { Change, Contributor, FileChange, PullRequest, RemoteTag, RepoSnapshot } from '@shared/types'
 import type { Result } from '@shared/types'
 import { BranchModal } from './components/BranchModal'
 import { CloneModal } from './components/CloneModal'
@@ -7,11 +7,31 @@ import { CommitGraph } from './components/CommitGraph'
 import { Composer } from './components/Composer'
 import { Detail } from './components/Detail'
 import { ProjectsPage } from './components/ProjectsPage'
+import { SettingsPage } from './components/SettingsPage'
 import { PullRequestModal } from './components/PullRequestModal'
 import { RepoSide, type SideTab } from './components/RepoSide'
 import { TagModal } from './components/TagModal'
 import { Toolbar } from './components/Toolbar'
+import { WidthHandle } from './components/WidthHandle'
 import { baseName } from './format'
+import {
+  COMPOSER_MAX,
+  COMPOSER_MIN,
+  DEFAULT_LAYOUT,
+  DETAIL_MAX,
+  DETAIL_MIN,
+  FILES_MAX,
+  FILES_MIN,
+  GRAPH_MIN,
+  HISTORY_MIN,
+  SIDE_MAX,
+  SIDE_MIN,
+  clamp,
+  fitColumns,
+  fitComposer,
+  readLayout,
+  saveLayout,
+} from './layout'
 import { forgetProject, readProjects, rememberProject, toggleFavorite, type Project } from './projects'
 
 type Notice = { kind: 'ok' | 'err'; text: string }
@@ -36,6 +56,7 @@ function repoSignature(snap: RepoSnapshot): string {
     snap.remotes.join('\n'),
     snap.truncated ? '1' : '0',
     snap.tags.map((tag) => `${tag.name}:${tag.commit}:${tag.annotated ? 1 : 0}`).join('\n'),
+    (snap.contributors ?? []).map((person) => `${person.name}<${person.email}>`).join('\n'),
     commits,
     branches,
     changes,
@@ -45,7 +66,8 @@ function repoSignature(snap: RepoSnapshot): string {
 export function App() {
   const api = window.graphgit
   const [projects, setProjects] = useState<Project[]>([])
-  const [page, setPage] = useState<'projects' | 'repo'>('projects')
+  const [page, setPage] = useState<'projects' | 'repo' | 'settings'>('projects')
+  const [settingsFrom, setSettingsFrom] = useState<'projects' | 'repo'>('projects')
   const [snap, setSnap] = useState<RepoSnapshot | null>(null)
   const [pendingInit, setPendingInit] = useState<string | null>(null)
   const [welcomeError, setWelcomeError] = useState<string | null>(null)
@@ -62,6 +84,10 @@ export function App() {
   const [panel, setPanel] = useState<'commit' | 'work'>('commit')
   const [workSel, setWorkSel] = useState<WorkSel | null>(null)
   const [message, setMessage] = useState('')
+  const [withUsers, setWithUsers] = useState<Contributor[]>([])
+  const [layout, setLayout] = useState(readLayout)
+  const [frame, setFrame] = useState({ width: 0, height: 0 })
+  const workspaceRef = useRef<HTMLDivElement>(null)
   const [branchModal, setBranchModal] = useState(false)
   const [branchName, setBranchName] = useState('')
   const [tagModal, setTagModal] = useState(false)
@@ -74,6 +100,10 @@ export function App() {
   const [side, setSide] = useState<SideTab>('branches')
   const [pulls, setPulls] = useState<PullRequest[]>([])
   const [pullDetail, setPullDetail] = useState<string | null>(null)
+  const [remoteTags, setRemoteTags] = useState<RemoteTag[]>([])
+  const [remoteTagRemote, setRemoteTagRemote] = useState<string | null>(null)
+  const [remoteTagDetail, setRemoteTagDetail] = useState<string | null>(null)
+  const [remoteTagsReady, setRemoteTagsReady] = useState(false)
   const [cloneOpen, setCloneOpen] = useState(false)
   const [cloneUrl, setCloneUrl] = useState('')
   const [cloneFolder, setCloneFolder] = useState('repository')
@@ -338,8 +368,29 @@ export function App() {
   }, [notice])
 
   useEffect(() => {
-    document.title = page === 'repo' && snap ? `GraphGit — ${baseName(snap.path)}` : 'GraphGit'
-  }, [page, snap])
+    document.title = page === 'repo' && snap ? `GraphGit — ${baseName(snap.path)}` : page === 'settings' ? 'GraphGit — Settings' : 'GraphGit'
+  }, [page, snap, layout.side, layout.detail])
+
+  useEffect(() => {
+    saveLayout(layout)
+  }, [layout])
+
+  const repoOpen = page === 'repo' && snap != null
+  useEffect(() => {
+    const el = workspaceRef.current
+    if (!el) return
+    const publish = () => {
+      const parent = el.parentElement
+      const width = el.clientWidth
+      const height = parent?.clientHeight ?? 0
+      setFrame((current) => (current.width === width && current.height === height ? current : { width, height }))
+    }
+    const observer = new ResizeObserver(publish)
+    observer.observe(el)
+    if (el.parentElement) observer.observe(el.parentElement)
+    publish()
+    return () => observer.disconnect()
+  }, [repoOpen])
 
   useEffect(() => {
     if (page !== 'repo' || !snap?.path || !api.watchRepo) return
@@ -397,6 +448,38 @@ export function App() {
     const timer = window.setInterval(() => void loadPulls(), 20_000)
     return () => window.clearInterval(timer)
   }, [loadPulls, page, side, snap?.path])
+
+  const loadRemoteTags = useCallback(async () => {
+    const current = snapRef.current
+    if (!current) return
+    const result = await api.listRemoteTags(current.path)
+    if (snapRef.current?.path !== current.path) return
+    setRemoteTagsReady(true)
+    if (!result.ok) {
+      setRemoteTags([])
+      setRemoteTagRemote(null)
+      setRemoteTagDetail(result.error)
+      return
+    }
+    setRemoteTags(result.data.tags)
+    setRemoteTagRemote(result.data.remote)
+    setRemoteTagDetail(result.data.detail)
+  }, [api])
+
+  useEffect(() => {
+    setRemoteTags([])
+    setRemoteTagRemote(null)
+    setRemoteTagDetail(null)
+    setRemoteTagsReady(false)
+    setWithUsers([])
+  }, [snap?.path])
+
+  useEffect(() => {
+    if (page !== 'repo' || side !== 'tags' || !snap?.path) return
+    void loadRemoteTags()
+    const timer = window.setInterval(() => void loadRemoteTags(), 20_000)
+    return () => window.clearInterval(timer)
+  }, [loadRemoteTags, page, side, snap?.path])
 
   async function selectFile(file: string) {
     const current = snapRef.current
@@ -628,10 +711,43 @@ export function App() {
 
   const selectedCommit = snap?.commits.find((commit) => commit.hash === selectedHash) ?? null
   const showRepo = page === 'repo' && snap
+  const columns = fitColumns(layout, frame.width)
+  const composerHeight = fitComposer(layout.composer, frame.height)
+
+  function resizeSide(delta: number) {
+    const width = workspaceRef.current?.clientWidth ?? frame.width
+    setLayout((current) => {
+      const shown = fitColumns(current, width)
+      const max = width > 0 ? width - shown.detail - GRAPH_MIN : SIDE_MAX
+      return { ...current, side: clamp(shown.side + delta, SIDE_MIN, Math.min(SIDE_MAX, max)) }
+    })
+  }
+
+  function resizeDetail(delta: number) {
+    const width = workspaceRef.current?.clientWidth ?? frame.width
+    setLayout((current) => {
+      const shown = fitColumns(current, width)
+      const max = width > 0 ? width - shown.side - GRAPH_MIN : DETAIL_MAX
+      return { ...current, detail: clamp(shown.detail - delta, DETAIL_MIN, Math.min(DETAIL_MAX, max)) }
+    })
+  }
+
+  function resizeComposer(delta: number) {
+    const body = workspaceRef.current?.parentElement?.clientHeight ?? frame.height
+    setLayout((current) => {
+      const shown = fitComposer(current.composer, body)
+      const room = body > 0 ? body - HISTORY_MIN - 8 : COMPOSER_MAX
+      return { ...current, composer: clamp(shown - delta, COMPOSER_MIN, Math.min(COMPOSER_MAX, Math.max(COMPOSER_MIN, room))) }
+    })
+  }
 
   return (
     <div className="app">
-      {showRepo ? (
+      {page === 'settings' ? (
+        <SettingsPage
+          onBack={() => setPage(settingsFrom === 'repo' && snap ? 'repo' : 'projects')}
+        />
+      ) : showRepo ? (
         <>
           <Toolbar
             path={snap.path}
@@ -641,9 +757,33 @@ export function App() {
             onProjects={() => setPage('projects')}
             onOpen={() => void openDialog()}
             onRefresh={() => void runAction('Refreshing', async () => ({ ok: true, data: 'Refreshed' }), 'keep')}
-            onFetch={() => void runAction('Fetching', () => api.fetch(snap.path), 'keep')}
-            onPull={() => void runAction('Pulling', () => api.pull(snap.path), 'head')}
+            onFetch={() =>
+              void runAction(
+                'Fetching',
+                async () => {
+                  const result = await api.fetch(snap.path)
+                  if (result.ok) await loadRemoteTags()
+                  return result
+                },
+                'keep',
+              )
+            }
+            onPull={() =>
+              void runAction(
+                'Pulling',
+                async () => {
+                  const result = await api.pull(snap.path)
+                  if (result.ok) await loadRemoteTags()
+                  return result
+                },
+                'head',
+              )
+            }
             onPush={() => void runAction('Pushing', () => api.push(snap.path), 'keep')}
+            onSettings={() => {
+              setSettingsFrom('repo')
+              setPage('settings')
+            }}
           />
           {busy && <div className="busy-line" />}
           {notice && (
@@ -654,13 +794,22 @@ export function App() {
               </button>
             </div>
           )}
-          <div className="workspace">
+          <div className="repo-split">
+          <div className="workspace-wrap" ref={workspaceRef}>
+            <div
+              className="workspace"
+              style={{ gridTemplateColumns: `${columns.side}px minmax(0, 1fr) ${columns.detail}px` }}
+            >
             <aside className="sidebar">
               <RepoSide
                 tab={side}
                 onTab={setSide}
                 branches={snap.branches}
                 tags={snap.tags ?? []}
+                remoteTags={remoteTags}
+                remoteName={remoteTagRemote}
+                remoteDetail={remoteTagDetail}
+                remoteReady={remoteTagsReady}
                 head={snap.commits.find((commit) => commit.head)?.hash ?? null}
                 detached={snap.header.detached}
                 pulls={pulls}
@@ -679,7 +828,17 @@ export function App() {
                   setTagModal(true)
                 }}
                 onDeleteTag={(name) => void onDeleteTag(name)}
-                onPushTag={(name) => void runAction('Pushing tag', () => api.pushTag(snap.path, name), 'keep')}
+                onPushTag={(name) =>
+                  void runAction(
+                    'Pushing tag',
+                    async () => {
+                      const result = await api.pushTag(snap.path, name)
+                      if (result.ok) await loadRemoteTags()
+                      return result
+                    },
+                    'keep',
+                  )
+                }
                 onCheckoutPull={(number) =>
                   void runAction('Checking out pull request', async () => {
                     const result = await api.checkoutPullRequest(snap.path, number)
@@ -719,22 +878,54 @@ export function App() {
                   if (ok) showOk('Copied commit hash')
                 })
               }}
+              filesHeight={Number.isFinite(layout.files) ? layout.files : DEFAULT_LAYOUT.files}
+              onFilesHeight={(height) => setLayout((current) => ({ ...current, files: clamp(height, FILES_MIN, FILES_MAX) }))}
+            />
+            </div>
+            <WidthHandle
+              overlay
+              label="Resize sidebar"
+              style={{ left: columns.side }}
+              onDrag={resizeSide}
+              onReset={() => setLayout((current) => ({ ...current, side: DEFAULT_LAYOUT.side }))}
+            />
+            <WidthHandle
+              overlay
+              label="Resize details"
+              style={{ left: `calc(100% - ${columns.detail}px)` }}
+              onDrag={resizeDetail}
+              onReset={() => setLayout((current) => ({ ...current, detail: DEFAULT_LAYOUT.detail }))}
             />
           </div>
+          <WidthHandle
+            axis="y"
+            label="Resize commit area"
+            onDrag={resizeComposer}
+            onReset={() => setLayout((current) => ({ ...current, composer: DEFAULT_LAYOUT.composer }))}
+          />
           <Composer
             changes={snap.changes}
+            changesWidth={layout.changes}
+            height={composerHeight}
             message={message}
+            contributors={snap.contributors ?? []}
+            withUsers={withUsers}
             busy={Boolean(busy)}
             selected={workSel}
             onMessage={setMessage}
-            onCommit={() => {
+            onWithUsers={setWithUsers}
+            onChangesWidth={(width) => setLayout((current) => ({ ...current, changes: width }))}
+            onCommit={(people) => {
               const text = message.trim()
               if (!text) return
               void runAction(
                 'Committing',
                 async () => {
-                  const result = await api.commit(snap.path, text)
-                  if (result.ok) setMessage('')
+                  const result = await api.commit(snap.path, text, people)
+                  if (result.ok) {
+                    setMessage('')
+                    setWithUsers([])
+                  }
                   return result
                 },
                 'head',
@@ -746,6 +937,7 @@ export function App() {
             onUnstageAll={() => void runAction('Unstaging', () => api.unstageAll(snap.path), 'keep')}
             onSelectChange={(change, staged) => void selectChange(change, staged)}
           />
+          </div>
           {branchModal && (
             <BranchModal
               name={branchName}
@@ -799,6 +991,10 @@ export function App() {
           onSelect={(repoPath) => void openPath(repoPath)}
           onToggleFavorite={(repoPath) => setProjects(toggleFavorite(repoPath))}
           onForget={(repoPath) => setProjects(forgetProject(repoPath))}
+          onSettings={() => {
+            setSettingsFrom('projects')
+            setPage('settings')
+          }}
         />
       )}
       {cloneOpen && (
