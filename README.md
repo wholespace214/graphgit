@@ -26,7 +26,7 @@ Installers are published on [GitHub Releases](https://github.com/wholespace214/g
 | --- | --- |
 | Windows | `GraphGit-Setup-<version>.exe`, or `GraphGit-<version>-portable.exe` |
 | macOS | `GraphGit-<version>-mac-<arch>.dmg` |
-| Linux | `GraphGit-<version>-linux-<arch>.AppImage` or `.deb` |
+| Linux | `GraphGit-<version>-linux-x86_64.AppImage` or `GraphGit-<version>-linux-amd64.deb` |
 
 These builds are not code-signed. Windows SmartScreen and macOS Gatekeeper can ask you to confirm the app before it opens.
 
