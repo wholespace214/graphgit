@@ -4,11 +4,13 @@
   "version": "0.1.0",
   "private": true,
   "description": "A visual Git client for commits, branches, diffs, and remotes.",
+  "author": "wholespace214",
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "dist": "electron-vite build && electron-builder --publish never",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
     "smoke": "tsx scripts/git-smoke.ts"
@@ -23,12 +25,14 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
     "electron": "^45.1.0",
+    "electron-builder": "^26.18.0",
     "electron-vite": "^6.0.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vite": "^8.3.5"
   },
   "allowScripts": {
-    "esbuild@0.28.2": true
+    "esbuild@0.28.2": true,
+    "electron-winstaller@5.4.0": true
   }
 }

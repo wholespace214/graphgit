@@ -32,20 +32,84 @@ button:disabled { cursor: default; }
     var(--bg);
 }
 
-.toolbar {
+.toolbar,
+.chrome-title,
+.chrome-actions {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 52px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--line);
-  background: rgba(16, 21, 28, 0.92);
-  flex: none;
 }
+.toolbar,
+.chrome {
+  border-bottom: 1px solid var(--line);
+  background: #10151c;
+  flex: none;
+  -webkit-app-region: drag;
+}
+.toolbar {
+  height: 36px;
+  padding-left: 12px;
+}
+.chrome-title {
+  height: 36px;
+  padding-left: 12px;
+}
+.chrome-actions {
+  height: 40px;
+  padding: 0 12px;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  background: #0e1116;
+}
+.chrome-actions .ghost,
+.chrome-actions .primary {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.toolbar button,
+.toolbar input,
+.toolbar .repo-id,
+.toolbar .branch-pill,
+.toolbar .upstream,
+.toolbar .sync,
+.toolbar .busy-label,
+.chrome button,
+.chrome .repo-id,
+.chrome .branch-pill,
+.chrome .upstream,
+.chrome .sync,
+.chrome .busy-label {
+  -webkit-app-region: no-drag;
+}
+.window-controls {
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  height: 36px;
+  margin-left: 8px;
+  -webkit-app-region: no-drag;
+}
+.window-controls button {
+  width: 46px;
+  height: 36px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+.window-controls button:hover { background: var(--bg-overlay); }
+.window-controls button.close:hover { background: #c42b1c; border-color: #c42b1c; color: white; }
+.window-controls svg { display: block; }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 650; letter-spacing: -0.02em; flex: none; }
-.repo-id { display: flex; flex-direction: column; min-width: 0; }
-.repo-id strong { line-height: 1.1; }
-.repo-path { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
+.repo-id { display: flex; flex-direction: row; align-items: baseline; gap: 8px; min-width: 0; }
+.repo-id strong { line-height: 1; }
+.repo-path { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; line-height: 1; }
 .branch-pill { background: #17382c; color: #8ff0c6; border-radius: 999px; padding: 3px 8px; flex: none; }
 .upstream { color: var(--muted); font-size: 12px; flex: none; }
 .sync { font-size: 12px; padding: 2px 7px; border-radius: 999px; flex: none; }

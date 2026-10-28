@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, clipboard, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, type WebContents } from 'electron'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -21,6 +21,7 @@ import {
   unstageAll,
   workingDiff,
 } from './git'
+import { watchRepo } from './watch'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 let mainWindow: BrowserWindow | null = null
@@ -53,12 +54,13 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1440,
     height: 900,
-    minWidth: 1100,
-    minHeight: 720,
+    minWidth: 720,
+    minHeight: 640,
     show: false,
     backgroundColor: '#0e1116',
     title: 'GraphGit',
     icon: appIcon(),
+    titleBarStyle: 'hidden',
     autoHideMenuBar: true,
     webPreferences: {
       preload: preloadScript(),
@@ -69,6 +71,11 @@ function createWindow() {
   })
   mainWindow = win
   win.removeMenu()
+  const sendMaximized = (maximized: boolean) => {
+    if (!win.isDestroyed()) win.webContents.send('window:maximized', maximized)
+  }
+  win.on('maximize', () => sendMaximized(true))
+  win.on('unmaximize', () => sendMaximized(false))
   win.once('ready-to-show', () => win.show())
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null
@@ -109,6 +116,53 @@ function handle<T>(channel: string, fn: (...args: unknown[]) => Promise<T>) {
 }
 
 function registerIpc() {
+  let repoWatch: { token: string; stop: () => void } | null = null
+  let watchSeq = 0
+  const hooked = new WeakSet<WebContents>()
+  const stopWatch = (token?: string) => {
+    if (token !== undefined && repoWatch?.token !== token) return
+    repoWatch?.stop()
+    repoWatch = null
+  }
+  ipcMain.handle('repo:watch', async (event, repoPath: unknown, token: unknown) => {
+    const nextToken = String(token ?? '')
+    const seq = ++watchSeq
+    stopWatch()
+    const watched = await watchRepo(String(repoPath ?? ''), () => {
+      if (!event.sender.isDestroyed()) event.sender.send('repo:changed')
+    })
+    if (seq !== watchSeq) {
+      watched.stop()
+      return watched.root
+    }
+    repoWatch = { token: nextToken, stop: watched.stop }
+    if (!hooked.has(event.sender)) {
+      hooked.add(event.sender)
+      event.sender.once('destroyed', () => {
+        watchSeq += 1
+        stopWatch()
+      })
+    }
+    return watched.root
+  })
+  ipcMain.handle('repo:unwatch', (_event, token: unknown) => {
+    watchSeq += 1
+    stopWatch(String(token ?? ''))
+  })
+  ipcMain.handle('window:minimize', (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.minimize()
+  })
+  ipcMain.handle('window:toggle-maximize', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win) return false
+    if (win.isMaximized()) win.unmaximize()
+    else win.maximize()
+    return win.isMaximized()
+  })
+  ipcMain.handle('window:close', (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.close()
+  })
+  ipcMain.handle('window:is-maximized', (event) => Boolean(BrowserWindow.fromWebContents(event.sender)?.isMaximized()))
   ipcMain.handle('repo:pick', async (event, defaultPath: unknown) => {
     const parent = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const options = {

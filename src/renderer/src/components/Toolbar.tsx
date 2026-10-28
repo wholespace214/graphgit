@@ -1,6 +1,7 @@
 import type { BranchHeader } from '@shared/types'
 import { baseName } from '../format'
 import { Logo } from './Logo'
+import { WindowControls } from './WindowControls'
 
 export function Toolbar({
   path,
@@ -38,46 +39,52 @@ export function Toolbar({
   const canPush = !busy && !header.detached && !noRemote
 
   return (
-    <header className="toolbar">
-      <button className="ghost" onClick={onProjects} disabled={Boolean(busy)}>
-        Projects
-      </button>
-      <div className="brand">
-        <Logo />
-        <span>GraphGit</span>
+    <header className="chrome">
+      <div className="chrome-title">
+        <div className="brand">
+          <Logo size={18} />
+          <span>GraphGit</span>
+        </div>
+        <div className="repo-id">
+          <strong title={path}>{baseName(path)}</strong>
+          <span className="repo-path" title={path}>
+            {path}
+          </span>
+        </div>
+        <span className="branch-pill">{header.detached ? 'Detached HEAD' : header.name}</span>
+        {header.upstream && (
+          <span className="upstream">
+            {header.upstream}
+            {header.gone ? ' (gone)' : ''}
+          </span>
+        )}
+        {header.ahead > 0 && <span className="sync ahead">{header.ahead} ahead</span>}
+        {header.behind > 0 && <span className="sync behind">{header.behind} behind</span>}
+        <div className="spacer" />
+        {busy && <span className="busy-label">{busy}</span>}
+        <WindowControls />
       </div>
-      <div className="repo-id">
-        <strong title={path}>{baseName(path)}</strong>
-        <span className="repo-path" title={path}>
-          {path}
-        </span>
+      <div className="chrome-actions">
+        <button className="ghost" onClick={onProjects} disabled={Boolean(busy)}>
+          Projects
+        </button>
+        <div className="spacer" />
+        <button className="ghost" onClick={onRefresh} disabled={Boolean(busy)}>
+          Refresh
+        </button>
+        <button className="ghost" onClick={onFetch} disabled={!canFetch} title={fetchTitle}>
+          Fetch
+        </button>
+        <button className="ghost" onClick={onPull} disabled={!canPull} title={pullTitle}>
+          Pull
+        </button>
+        <button className="ghost" onClick={onPush} disabled={!canPush} title={pushTitle}>
+          Push
+        </button>
+        <button className="primary" onClick={onOpen} disabled={Boolean(busy)}>
+          Open
+        </button>
       </div>
-      <span className="branch-pill">{header.detached ? 'Detached HEAD' : header.name}</span>
-      {header.upstream && (
-        <span className="upstream">
-          {header.upstream}
-          {header.gone ? ' (gone)' : ''}
-        </span>
-      )}
-      {header.ahead > 0 && <span className="sync ahead">{header.ahead} ahead</span>}
-      {header.behind > 0 && <span className="sync behind">{header.behind} behind</span>}
-      <div className="spacer" />
-      {busy && <span className="busy-label">{busy}</span>}
-      <button className="ghost" onClick={onRefresh} disabled={Boolean(busy)}>
-        Refresh
-      </button>
-      <button className="ghost" onClick={onFetch} disabled={!canFetch} title={fetchTitle}>
-        Fetch
-      </button>
-      <button className="ghost" onClick={onPull} disabled={!canPull} title={pullTitle}>
-        Pull
-      </button>
-      <button className="ghost" onClick={onPush} disabled={!canPush} title={pushTitle}>
-        Push
-      </button>
-      <button className="primary" onClick={onOpen} disabled={Boolean(busy)}>
-        Open
-      </button>
     </header>
   )
 }

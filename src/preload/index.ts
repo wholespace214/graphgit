@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type { GraphGitApi } from '../shared/api'
 
 const api: GraphGitApi = {
@@ -22,6 +22,25 @@ const api: GraphGitApi = {
   fetch: (repoPath) => ipcRenderer.invoke('repo:fetch', repoPath),
   initRepo: (repoPath) => ipcRenderer.invoke('repo:init', repoPath),
   copyText: (text) => ipcRenderer.invoke('clipboard:write', text),
+  watchRepo: (repoPath, cb) => {
+    const token = `${Date.now()}-${Math.random()}`
+    const listener = () => cb()
+    ipcRenderer.on('repo:changed', listener)
+    void ipcRenderer.invoke('repo:watch', repoPath, token)
+    return () => {
+      ipcRenderer.removeListener('repo:changed', listener)
+      void ipcRenderer.invoke('repo:unwatch', token)
+    }
+  },
+  minimize: () => ipcRenderer.invoke('window:minimize'),
+  toggleMaximize: () => ipcRenderer.invoke('window:toggle-maximize'),
+  closeWindow: () => ipcRenderer.invoke('window:close'),
+  isMaximized: () => ipcRenderer.invoke('window:is-maximized'),
+  onMaximized: (cb) => {
+    const listener = (_event: IpcRendererEvent, maximized: boolean) => cb(Boolean(maximized))
+    ipcRenderer.on('window:maximized', listener)
+    return () => ipcRenderer.removeListener('window:maximized', listener)
+  },
 }
 
 contextBridge.exposeInMainWorld('graphgit', api)
