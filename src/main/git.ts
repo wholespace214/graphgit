@@ -883,7 +883,7 @@ function assertStashMessage(message: string): string {
   return note
 }
 
-async function stashIdentityPrefix(repo: string): Promise<string[]> {
+async function commitIdentityPrefix(repo: string, action: string): Promise<string[]> {
   const [name, email] = await Promise.all([
     runGit(repo, ['config', '--get', 'user.name'], { check: false }),
     runGit(repo, ['config', '--get', 'user.email'], { check: false }),
@@ -892,7 +892,7 @@ async function stashIdentityPrefix(repo: string): Promise<string[]> {
   const ident = await runGit(repo, ['log', '-1', '--format=%an%x1f%ae'], { check: false })
   const [authorName, authorEmail] = ident.code === 0 ? ident.stdout.trim().split('\x1f') : []
   if (!authorName || !authorEmail) {
-    throw new GitCommandError('Git needs user.name and user.email before it can stash. Set them in your Git config, then try again.')
+    throw new GitCommandError(`Git needs user.name and user.email before it can ${action}. Set them in your Git config, then try again.`)
   }
   return ['-c', `user.name=${authorName}`, '-c', `user.email=${authorEmail}`]
 }
@@ -901,7 +901,7 @@ export function saveStash(repoPath: string, message: string, includeUntracked: b
   return wrap(async () => {
     const repo = await resolveRepo(repoPath)
     const note = assertStashMessage(message)
-    const identity = await stashIdentityPrefix(repo)
+    const identity = await commitIdentityPrefix(repo, 'stash')
     const args = [...identity, 'stash', 'push']
     if (includeUntracked) args.push('--include-untracked')
     if (note) args.push('-m', note)
@@ -1133,7 +1133,8 @@ export function pull(repoPath: string, mode: PullMode = 'default'): Promise<Resu
     if (!status.header.upstream || status.header.gone) {
       throw new GitCommandError('This branch has no upstream to pull from')
     }
-    const result = await runGit(repo, pullArgs(mode), { check: true, timeoutMs: 120_000 })
+    const identity = await commitIdentityPrefix(repo, 'pull')
+    const result = await runGit(repo, [...identity, ...pullArgs(mode)], { check: true, timeoutMs: 120_000 })
     return outputText(result)
   })
 }
