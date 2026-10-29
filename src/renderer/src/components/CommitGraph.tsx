@@ -1,22 +1,30 @@
 import { useEffect, useMemo } from 'react'
 import type { Commit } from '@shared/types'
-import { LANE_WIDTH, ROW_HEIGHT, laneColor, layoutCommits, type GraphRow } from '@shared/layout'
+import { LANE_WIDTH, REF_ROW_HEIGHT, ROW_HEIGHT, laneColor, layoutCommits, type GraphRow } from '@shared/layout'
 import { formatWhen, shortHash } from '../format'
+import type { HistoryColumn } from '../layout'
+import { WidthHandle } from './WidthHandle'
 
 export function CommitGraph({
   commits,
   truncated,
   query,
   selected,
+  columns,
   onQuery,
   onSelect,
+  onColumnWidth,
+  onColumnReset,
 }: {
   commits: Commit[]
   truncated: boolean
   query: string
   selected: string | null
+  columns: Record<HistoryColumn, number>
   onQuery: (value: string) => void
   onSelect: (hash: string) => void
+  onColumnWidth: (column: HistoryColumn, delta: number) => void
+  onColumnReset: (column: HistoryColumn) => void
 }) {
   const rows = useMemo(() => layoutCommits(commits), [commits])
   const maxCol = rows.reduce((max, row) => {
@@ -47,27 +55,43 @@ export function CommitGraph({
           {truncated ? '+' : ''} commits
         </span>
       </div>
-      <div className="graph-scroll" style={{ ['--lanes' as string]: `${graphWidth}px` }}>
+      <div
+        className="graph-scroll"
+        style={{
+          ['--lanes' as string]: `${graphWidth}px`,
+          ['--col-hash' as string]: `${columns.hash}px`,
+          ['--col-author' as string]: `${columns.author}px`,
+          ['--col-when' as string]: `${columns.when}px`,
+        }}
+      >
+        <div className="commit-row commit-head" role="row">
+          <span />
+          <span>Message</span>
+          <HistoryHead label="Hash" column="hash" onColumnWidth={onColumnWidth} onColumnReset={onColumnReset} />
+          <HistoryHead label="Author" column="author" onColumnWidth={onColumnWidth} onColumnReset={onColumnReset} />
+          <HistoryHead label="Date" column="when" align="end" onColumnWidth={onColumnWidth} onColumnReset={onColumnReset} />
+        </div>
         {rows.length === 0 && <p className="muted pad">No commits yet. Stage files below and create the first one.</p>}
         {rows.map((row, index) => {
           const haystack = `${row.commit.subject} ${row.commit.author} ${row.commit.hash}`.toLowerCase()
           const dim = Boolean(needle) && !haystack.includes(needle)
           const isSelected = row.commit.hash === selected
+          const tall = row.commit.refs.length > 0
           return (
             <button
               key={row.commit.hash}
               type="button"
-              className={`commit${isSelected ? ' selected' : ''}${dim ? ' dim' : ''}`}
+              className={`commit-row commit${tall ? ' tall' : ''}${isSelected ? ' selected' : ''}${dim ? ' dim' : ''}`}
               onClick={() => onSelect(row.commit.hash)}
               aria-current={row.commit.head ? 'true' : undefined}
               aria-selected={isSelected}
             >
-              <GraphCell row={row} previous={rows[index - 1]} width={graphWidth} selected={isSelected} />
+              <GraphCell row={row} previous={rows[index - 1]} width={graphWidth} height={tall ? REF_ROW_HEIGHT : ROW_HEIGHT} selected={isSelected} />
               <span className="subject">
                 {row.commit.refs.length > 0 && (
                   <span className="pills">
                     {row.commit.refs.map((ref) => (
-                      <span key={`${ref.kind}-${ref.name}`} className={`pill ${ref.kind}${ref.current ? ' current' : ''}`}>
+                      <span key={`${ref.kind}-${ref.name}`} className={`pill ref-${ref.kind}${ref.current ? ' current' : ''}`} title={ref.name}>
                         {ref.name}
                       </span>
                     ))}
@@ -90,24 +114,53 @@ export function CommitGraph({
   )
 }
 
+function HistoryHead({
+  label,
+  column,
+  align,
+  onColumnWidth,
+  onColumnReset,
+}: {
+  label: string
+  column: HistoryColumn
+  align?: 'end'
+  onColumnWidth: (column: HistoryColumn, delta: number) => void
+  onColumnReset: (column: HistoryColumn) => void
+}) {
+  return (
+    <span className={align === 'end' ? 'commit-head-cell end' : 'commit-head-cell'}>
+      <WidthHandle
+        column
+        label={`Resize ${label}`}
+        onDrag={(delta) => onColumnWidth(column, -delta)}
+        onReset={() => onColumnReset(column)}
+      />
+      {label}
+    </span>
+  )
+}
+
 function GraphCell({
   row,
   previous,
   width,
+  height,
   selected,
 }: {
   row: GraphRow
   previous?: GraphRow
   width: number
+  height: number
   selected: boolean
 }) {
   const x = (col: number) => 8 + col * LANE_WIDTH + LANE_WIDTH / 2
-  const mid = ROW_HEIGHT / 2
+  const mid = height / 2
+  const bend = Math.round((height * 14) / 36)
   const continued = previous ? previous.output[row.col] === row.commit.hash : false
   const color = laneColor(row.col)
 
   return (
-    <svg className="graph-svg" width={width} height={ROW_HEIGHT} aria-hidden="true">
+    <svg className="graph-svg" width={width} height={height} aria-hidden="true">
       {row.input.map((hash, index) => {
         if (!hash || index === row.col) return null
         return (
@@ -116,7 +169,7 @@ function GraphCell({
             x1={x(index)}
             y1={0}
             x2={x(index)}
-            y2={ROW_HEIGHT}
+            y2={height}
             stroke={laneColor(index)}
           />
         )
@@ -125,13 +178,13 @@ function GraphCell({
       {row.edges.map((edge, index) => {
         const stroke = laneColor(edge.from)
         if (edge.from === edge.to) {
-          return <line key={`edge-${index}`} x1={x(edge.from)} y1={mid} x2={x(edge.to)} y2={ROW_HEIGHT} stroke={stroke} />
+          return <line key={`edge-${index}`} x1={x(edge.from)} y1={mid} x2={x(edge.to)} y2={height} stroke={stroke} />
         }
-        const path = `M ${x(edge.from)} ${mid} C ${x(edge.from)} ${mid + 14}, ${x(edge.to)} ${ROW_HEIGHT - 14}, ${x(edge.to)} ${ROW_HEIGHT}`
+        const path = `M ${x(edge.from)} ${mid} C ${x(edge.from)} ${mid + bend}, ${x(edge.to)} ${height - bend}, ${x(edge.to)} ${height}`
         return <path key={`edge-${index}`} d={path} stroke={stroke} fill="none" />
       })}
       {row.commit.head && <circle cx={x(row.col)} cy={mid} r={8} fill="none" stroke={color} strokeWidth={1.5} />}
-      <circle cx={x(row.col)} cy={mid} r={selected ? 5 : 4} fill={selected ? '#ffffff' : color} />
+      <circle cx={x(row.col)} cy={mid} r={selected ? 5 : 4} fill={selected ? 'var(--text)' : color} />
     </svg>
   )
 }

@@ -1,15 +1,41 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Change, FileChange, RepoSnapshot } from '@shared/types'
+import type { Change, Contributor, FileChange, PullRequest, RemoteTag, RepoSnapshot, StashEntry } from '@shared/types'
 import type { Result } from '@shared/types'
-import { BranchList } from './components/BranchList'
 import { BranchModal } from './components/BranchModal'
 import { CloneModal } from './components/CloneModal'
 import { CommitGraph } from './components/CommitGraph'
 import { Composer } from './components/Composer'
 import { Detail } from './components/Detail'
 import { ProjectsPage } from './components/ProjectsPage'
+import { SettingsPage } from './components/SettingsPage'
+import { PullRequestModal } from './components/PullRequestModal'
+import { StashModal } from './components/StashModal'
+import { RepoSide, type SideTab } from './components/RepoSide'
+import { TagModal } from './components/TagModal'
 import { Toolbar } from './components/Toolbar'
-import { baseName } from './format'
+import { WidthHandle } from './components/WidthHandle'
+import { baseName, formatWhen } from './format'
+import {
+  COMPOSER_MAX,
+  COMPOSER_MIN,
+  DEFAULT_LAYOUT,
+  HISTORY_COLUMNS,
+  type HistoryColumn,
+  DETAIL_MAX,
+  DETAIL_MIN,
+  FILES_MAX,
+  FILES_MIN,
+  GRAPH_MIN,
+  HISTORY_MIN,
+  SIDE_MAX,
+  SIDE_MIN,
+  clamp,
+  fitColumns,
+  fitComposer,
+  readLayout,
+  saveLayout,
+} from './layout'
+import { folderNameFromCloneUrl } from '@shared/clone'
 import { forgetProject, readProjects, rememberProject, toggleFavorite, type Project } from './projects'
 
 type Notice = { kind: 'ok' | 'err'; text: string }
@@ -33,6 +59,9 @@ function repoSignature(snap: RepoSnapshot): string {
     `${header.name}|${header.detached ? 1 : 0}|${header.upstream ?? ''}|${header.ahead}|${header.behind}|${header.gone ? 1 : 0}|${header.empty ? 1 : 0}`,
     snap.remotes.join('\n'),
     snap.truncated ? '1' : '0',
+    snap.tags.map((tag) => `${tag.name}:${tag.commit}:${tag.annotated ? 1 : 0}`).join('\n'),
+    (snap.stashes ?? []).map((entry) => `${entry.selector}:${entry.hash}:${entry.subject}`).join('\n'),
+    (snap.contributors ?? []).map((person) => `${person.name}<${person.email}>`).join('\n'),
     commits,
     branches,
     changes,
@@ -42,7 +71,8 @@ function repoSignature(snap: RepoSnapshot): string {
 export function App() {
   const api = window.graphgit
   const [projects, setProjects] = useState<Project[]>([])
-  const [page, setPage] = useState<'projects' | 'repo'>('projects')
+  const [page, setPage] = useState<'projects' | 'repo' | 'settings'>('projects')
+  const [settingsFrom, setSettingsFrom] = useState<'projects' | 'repo'>('projects')
   const [snap, setSnap] = useState<RepoSnapshot | null>(null)
   const [pendingInit, setPendingInit] = useState<string | null>(null)
   const [welcomeError, setWelcomeError] = useState<string | null>(null)
@@ -56,15 +86,35 @@ export function App() {
   const [diffText, setDiffText] = useState('')
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
-  const [panel, setPanel] = useState<'commit' | 'work'>('commit')
+  const [panel, setPanel] = useState<'commit' | 'work' | 'stash'>('commit')
   const [workSel, setWorkSel] = useState<WorkSel | null>(null)
   const [message, setMessage] = useState('')
+  const [withUsers, setWithUsers] = useState<Contributor[]>([])
+  const [layout, setLayout] = useState(readLayout)
+  const [frame, setFrame] = useState({ width: 0, height: 0 })
+  const workspaceRef = useRef<HTMLDivElement>(null)
   const [branchModal, setBranchModal] = useState(false)
   const [branchName, setBranchName] = useState('')
+  const [tagModal, setTagModal] = useState(false)
+  const [tagName, setTagName] = useState('')
+  const [tagMessage, setTagMessage] = useState('')
+  const [prModal, setPrModal] = useState(false)
+  const [prTitle, setPrTitle] = useState('')
+  const [prBase, setPrBase] = useState('main')
+  const [stashModal, setStashModal] = useState(false)
+  const [stashMessage, setStashMessage] = useState('')
+  const [stashUntracked, setStashUntracked] = useState(false)
+  const [stashSel, setStashSel] = useState<StashEntry | null>(null)
   const [modalError, setModalError] = useState<string | null>(null)
+  const [side, setSide] = useState<SideTab>('branches')
+  const [pulls, setPulls] = useState<PullRequest[]>([])
+  const [pullDetail, setPullDetail] = useState<string | null>(null)
+  const [remoteTags, setRemoteTags] = useState<RemoteTag[]>([])
+  const [remoteTagRemote, setRemoteTagRemote] = useState<string | null>(null)
+  const [remoteTagDetail, setRemoteTagDetail] = useState<string | null>(null)
+  const [remoteTagsReady, setRemoteTagsReady] = useState(false)
   const [cloneOpen, setCloneOpen] = useState(false)
   const [cloneUrl, setCloneUrl] = useState('')
-  const [cloneFolder, setCloneFolder] = useState('repository')
   const [cloneDest, setCloneDest] = useState('')
   const [cloneError, setCloneError] = useState<string | null>(null)
 
@@ -73,12 +123,14 @@ export function App() {
   const snapRef = useRef(snap)
   const panelRef = useRef(panel)
   const workRef = useRef(workSel)
+  const stashRef = useRef(stashSel)
   const hashRef = useRef(selectedHash)
   const fileRef = useRef(activeFile)
   const autoOpened = useRef(false)
   snapRef.current = snap
   panelRef.current = panel
   workRef.current = workSel
+  stashRef.current = stashSel
   hashRef.current = selectedHash
   fileRef.current = activeFile
 
@@ -93,6 +145,9 @@ export function App() {
     async (repoPath: string, hash: string, file: string | null) => {
       const my = ++token.current
       setPanel('commit')
+      panelRef.current = 'commit'
+      stashRef.current = null
+      setStashSel(null)
       setSelectedHash(hash)
       setDetailLoading(true)
       setDetailError(null)
@@ -149,9 +204,12 @@ export function App() {
         setPendingInit(null)
         setPage('repo')
         setSnap(result.data)
+        setSide('branches')
         setQuery('')
         setMessage('')
         setWorkSel(null)
+        stashRef.current = null
+        setStashSel(null)
         setProjects(rememberProject(result.data.path))
       } catch (error) {
         showError(error instanceof Error ? error.message : String(error))
@@ -189,6 +247,26 @@ export function App() {
         if (head) await loadCommit(result.data.path, head.hash, null)
         else setSelectedHash(null)
         return
+      }
+      const selectedStash = stashRef.current
+      if (panelRef.current === 'stash' && selectedStash) {
+        const still = (result.data.stashes ?? []).some(
+          (entry) => entry.selector === selectedStash.selector && entry.hash === selectedStash.hash,
+        )
+        if (still) {
+          const my = ++token.current
+          setDetailLoading(true)
+          const diff = await api.stashDiff(result.data.path, selectedStash.selector)
+          if (my !== token.current) return
+          setDiffText(diff.ok ? diff.data : '')
+          setDetailError(diff.ok ? null : diff.error)
+          setDetailLoading(false)
+          return
+        }
+        stashRef.current = null
+        setStashSel(null)
+        setPanel('commit')
+        panelRef.current = 'commit'
       }
       const selection = workRef.current
       if (panelRef.current === 'work' && selection) {
@@ -233,6 +311,17 @@ export function App() {
     if (!result.ok) return
     if (repoSignature(current) === repoSignature(result.data)) return
     setSnap(result.data)
+    if (panelRef.current === 'stash') {
+      const selectedStash = stashRef.current
+      const still = selectedStash
+        ? (result.data.stashes ?? []).some((entry) => entry.selector === selectedStash.selector && entry.hash === selectedStash.hash)
+        : false
+      if (still) return
+      stashRef.current = null
+      setStashSel(null)
+      setPanel('commit')
+      panelRef.current = 'commit'
+    }
     const selection = workRef.current
     if (panelRef.current === 'work' && selection) {
       const before = current.changes.find((item) => item.path === selection.path)
@@ -304,7 +393,6 @@ export function App() {
     const parent = current ? current.replace(/[\\/][^\\/]+$/, '') : saved
     setCloneError(null)
     setCloneUrl('')
-    setCloneFolder('repository')
     setCloneDest(parent)
     setCloneOpen(true)
   }, [])
@@ -325,8 +413,29 @@ export function App() {
   }, [notice])
 
   useEffect(() => {
-    document.title = page === 'repo' && snap ? `GraphGit — ${baseName(snap.path)}` : 'GraphGit'
-  }, [page, snap])
+    document.title = page === 'repo' && snap ? `GraphGit — ${baseName(snap.path)}` : page === 'settings' ? 'GraphGit — Settings' : 'GraphGit'
+  }, [page, snap, layout.side, layout.detail])
+
+  useEffect(() => {
+    saveLayout(layout)
+  }, [layout])
+
+  const repoOpen = page === 'repo' && snap != null
+  useEffect(() => {
+    const el = workspaceRef.current
+    if (!el) return
+    const publish = () => {
+      const parent = el.parentElement
+      const width = el.clientWidth
+      const height = parent?.clientHeight ?? 0
+      setFrame((current) => (current.width === width && current.height === height ? current : { width, height }))
+    }
+    const observer = new ResizeObserver(publish)
+    observer.observe(el)
+    if (el.parentElement) observer.observe(el.parentElement)
+    publish()
+    return () => observer.disconnect()
+  }, [repoOpen])
 
   useEffect(() => {
     if (page !== 'repo' || !snap?.path || !api.watchRepo) return
@@ -353,13 +462,70 @@ export function App() {
   }, [api, liveRefresh, page, snap?.path])
 
   useEffect(() => {
-    if (!branchModal) return
+    if (!branchModal && !tagModal && !prModal && !stashModal) return
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setBranchModal(false)
+      if (event.key !== 'Escape') return
+      setBranchModal(false)
+      setTagModal(false)
+      setPrModal(false)
+      setStashModal(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [branchModal])
+  }, [branchModal, tagModal, prModal, stashModal])
+
+  const loadPulls = useCallback(async () => {
+    const current = snapRef.current
+    if (!current) return
+    const result = await api.listPullRequests(current.path)
+    if (snapRef.current?.path !== current.path) return
+    if (!result.ok) {
+      setPulls([])
+      setPullDetail(result.error)
+      return
+    }
+    setPulls(result.data.requests)
+    setPullDetail(result.data.detail)
+  }, [api])
+
+  useEffect(() => {
+    if (page !== 'repo' || side !== 'pulls' || !snap?.path) return
+    void loadPulls()
+    const timer = window.setInterval(() => void loadPulls(), 20_000)
+    return () => window.clearInterval(timer)
+  }, [loadPulls, page, side, snap?.path])
+
+  const loadRemoteTags = useCallback(async () => {
+    const current = snapRef.current
+    if (!current) return
+    const result = await api.listRemoteTags(current.path)
+    if (snapRef.current?.path !== current.path) return
+    setRemoteTagsReady(true)
+    if (!result.ok) {
+      setRemoteTags([])
+      setRemoteTagRemote(null)
+      setRemoteTagDetail(result.error)
+      return
+    }
+    setRemoteTags(result.data.tags)
+    setRemoteTagRemote(result.data.remote)
+    setRemoteTagDetail(result.data.detail)
+  }, [api])
+
+  useEffect(() => {
+    setRemoteTags([])
+    setRemoteTagRemote(null)
+    setRemoteTagDetail(null)
+    setRemoteTagsReady(false)
+    setWithUsers([])
+  }, [snap?.path])
+
+  useEffect(() => {
+    if (page !== 'repo' || side !== 'tags' || !snap?.path) return
+    void loadRemoteTags()
+    const timer = window.setInterval(() => void loadRemoteTags(), 20_000)
+    return () => window.clearInterval(timer)
+  }, [loadRemoteTags, page, side, snap?.path])
 
   async function selectFile(file: string) {
     const current = snapRef.current
@@ -381,6 +547,9 @@ export function App() {
     if (!current) return
     const my = ++token.current
     setPanel('work')
+    panelRef.current = 'work'
+    stashRef.current = null
+    setStashSel(null)
     setWorkSel({ path: change.path, staged })
     setDetailLoading(true)
     setDetailError(null)
@@ -412,6 +581,135 @@ export function App() {
       setModalError(null)
       showOk(result.data)
       await reload('head')
+    } finally {
+      busyRef.current = false
+      setBusy(null)
+    }
+  }
+
+  async function onCreateTag() {
+    const current = snapRef.current
+    if (!current || busyRef.current) return
+    const name = tagName.trim()
+    if (!name) {
+      setModalError('Enter a tag name')
+      return
+    }
+    busyRef.current = true
+    setBusy('Creating tag')
+    try {
+      const result = await api.createTag(current.path, name, tagMessage)
+      if (!result.ok) {
+        setModalError(result.error)
+        return
+      }
+      setTagModal(false)
+      setTagName('')
+      setTagMessage('')
+      setModalError(null)
+      showOk(result.data)
+      await reload('keep')
+    } finally {
+      busyRef.current = false
+      setBusy(null)
+    }
+  }
+
+  async function onDeleteTag(name: string) {
+    const current = snapRef.current
+    if (!current || busyRef.current) return
+    if (!window.confirm(`Delete tag "${name}"?`)) return
+    await runAction('Deleting tag', () => api.deleteTag(current.path, name), 'keep')
+  }
+
+  function openStashModal() {
+    setModalError(null)
+    setStashModal(true)
+  }
+
+  async function selectStash(entry: StashEntry) {
+    const current = snapRef.current
+    if (!current) return
+    const my = ++token.current
+    stashRef.current = entry
+    panelRef.current = 'stash'
+    setStashSel(entry)
+    setPanel('stash')
+    setWorkSel(null)
+    setDetailLoading(true)
+    setDetailError(null)
+    const diff = await api.stashDiff(current.path, entry.selector)
+    if (my !== token.current) return
+    setDiffText(diff.ok ? diff.data : '')
+    setDetailError(diff.ok ? null : diff.error)
+    setDetailLoading(false)
+  }
+
+  async function onCreateStash() {
+    const current = snapRef.current
+    if (!current || busyRef.current) return
+    busyRef.current = true
+    setBusy('Stashing')
+    try {
+      const result = await api.saveStash(current.path, stashMessage, stashUntracked)
+      if (!result.ok) {
+        setModalError(result.error)
+        return
+      }
+      setStashModal(false)
+      setStashMessage('')
+      setModalError(null)
+      setSide('stash')
+      showOk(result.data)
+      await reload('keep')
+    } finally {
+      busyRef.current = false
+      setBusy(null)
+    }
+  }
+
+  async function runStash(label: string, entry: StashEntry, action: () => Promise<Result<string>>, clear: boolean) {
+    const current = snapRef.current
+    if (!current || busyRef.current) return
+    if (clear && stashRef.current?.hash === entry.hash) {
+      stashRef.current = null
+      setStashSel(null)
+      setPanel('commit')
+      panelRef.current = 'commit'
+    }
+    await runAction(
+      label,
+      async () => {
+        const result = await action()
+        if (!result.ok) await reload('keep')
+        return result
+      },
+      'keep',
+    )
+  }
+
+  async function onCreatePullRequest() {
+    const current = snapRef.current
+    if (!current || busyRef.current) return
+    const title = prTitle.trim()
+    const base = prBase.trim()
+    if (!title || !base) {
+      setModalError('Enter a title and a base branch')
+      return
+    }
+    busyRef.current = true
+    setBusy('Opening pull request')
+    try {
+      const result = await api.createPullRequest(current.path, title, base)
+      if (!result.ok) {
+        setModalError(result.error)
+        return
+      }
+      setPrModal(false)
+      setPrTitle('')
+      setModalError(null)
+      showOk(result.data)
+      await loadPulls()
     } finally {
       busyRef.current = false
       setBusy(null)
@@ -451,9 +749,9 @@ export function App() {
   async function onCloneSubmit() {
     if (busyRef.current) return
     const parent = cloneDest.trim()
-    const folder = cloneFolder.trim()
-    if (!cloneUrl.trim() || !parent || !folder) {
-      setCloneError('Enter a URL, destination, and folder name')
+    const folder = folderNameFromCloneUrl(cloneUrl)
+    if (!cloneUrl.trim() || !parent) {
+      setCloneError('Enter a URL and a destination folder')
       return
     }
     busyRef.current = true
@@ -528,10 +826,48 @@ export function App() {
 
   const selectedCommit = snap?.commits.find((commit) => commit.hash === selectedHash) ?? null
   const showRepo = page === 'repo' && snap
+  const columns = fitColumns(layout, frame.width)
+  const composerHeight = fitComposer(layout.composer, frame.height)
+
+  function resizeSide(delta: number) {
+    const width = workspaceRef.current?.clientWidth ?? frame.width
+    setLayout((current) => {
+      const shown = fitColumns(current, width)
+      const max = width > 0 ? width - shown.detail - GRAPH_MIN : SIDE_MAX
+      return { ...current, side: clamp(shown.side + delta, SIDE_MIN, Math.min(SIDE_MAX, max)) }
+    })
+  }
+
+  function resizeDetail(delta: number) {
+    const width = workspaceRef.current?.clientWidth ?? frame.width
+    setLayout((current) => {
+      const shown = fitColumns(current, width)
+      const max = width > 0 ? width - shown.side - GRAPH_MIN : DETAIL_MAX
+      return { ...current, detail: clamp(shown.detail - delta, DETAIL_MIN, Math.min(DETAIL_MAX, max)) }
+    })
+  }
+
+  function resizeHistory(column: HistoryColumn, delta: number) {
+    const spec = HISTORY_COLUMNS[column]
+    setLayout((current) => ({ ...current, [column]: clamp(current[column] + delta, spec.min, spec.max) }))
+  }
+
+  function resizeComposer(delta: number) {
+    const body = workspaceRef.current?.parentElement?.clientHeight ?? frame.height
+    setLayout((current) => {
+      const shown = fitComposer(current.composer, body)
+      const room = body > 0 ? body - HISTORY_MIN - 8 : COMPOSER_MAX
+      return { ...current, composer: clamp(shown - delta, COMPOSER_MIN, Math.min(COMPOSER_MAX, Math.max(COMPOSER_MIN, room))) }
+    })
+  }
 
   return (
     <div className="app">
-      {showRepo ? (
+      {page === 'settings' ? (
+        <SettingsPage
+          onBack={() => setPage(settingsFrom === 'repo' && snap ? 'repo' : 'projects')}
+        />
+      ) : showRepo ? (
         <>
           <Toolbar
             path={snap.path}
@@ -541,9 +877,39 @@ export function App() {
             onProjects={() => setPage('projects')}
             onOpen={() => void openDialog()}
             onRefresh={() => void runAction('Refreshing', async () => ({ ok: true, data: 'Refreshed' }), 'keep')}
-            onFetch={() => void runAction('Fetching', () => api.fetch(snap.path), 'keep')}
-            onPull={() => void runAction('Pulling', () => api.pull(snap.path), 'head')}
+            onFetch={(all) =>
+              void runAction(
+                all ? 'Fetching all' : 'Fetching',
+                async () => {
+                  const result = all ? await api.fetchAll(snap.path) : await api.fetch(snap.path)
+                  if (result.ok) await loadRemoteTags()
+                  return result
+                },
+                'keep',
+              )
+            }
+            onPull={(mode) =>
+              void runAction(
+                mode === 'rebase'
+                  ? 'Rebasing'
+                  : mode === 'ff-only'
+                    ? 'Pulling (fast-forward only)'
+                    : mode === 'ff'
+                      ? 'Pulling (fast-forward)'
+                      : 'Pulling',
+                async () => {
+                  const result = await api.pull(snap.path, mode)
+                  if (result.ok) await loadRemoteTags()
+                  return result
+                },
+                'head',
+              )
+            }
             onPush={() => void runAction('Pushing', () => api.push(snap.path), 'keep')}
+            onSettings={() => {
+              setSettingsFrom('repo')
+              setPage('settings')
+            }}
           />
           {busy && <div className="busy-line" />}
           {notice && (
@@ -554,17 +920,76 @@ export function App() {
               </button>
             </div>
           )}
-          <div className="workspace">
+          <div className="repo-split">
+          <div className="workspace-wrap" ref={workspaceRef}>
+            <div
+              className="workspace"
+              style={{ gridTemplateColumns: `${columns.side}px minmax(0, 1fr) ${columns.detail}px` }}
+            >
             <aside className="sidebar">
-              <BranchList
+              <RepoSide
+                tab={side}
+                onTab={setSide}
                 branches={snap.branches}
+                tags={snap.tags ?? []}
+                remoteTags={remoteTags}
+                remoteName={remoteTagRemote}
+                remoteDetail={remoteTagDetail}
+                remoteReady={remoteTagsReady}
+                head={snap.commits.find((commit) => commit.head)?.hash ?? null}
+                detached={snap.header.detached}
+                pulls={pulls}
+                pullDetail={pullDetail}
+                stashes={snap.stashes ?? []}
+                selectedStash={stashSel?.selector ?? null}
                 busy={Boolean(busy)}
+                canPush={snap.remotes.length > 0}
                 onCheckout={(name) => void runAction('Switching branch', () => api.checkout(snap.path, name), 'head')}
                 onNewBranch={() => {
                   setModalError(null)
                   setBranchModal(true)
                 }}
-                onDelete={(name) => void onDeleteBranch(name)}
+                onDeleteBranch={(name) => void onDeleteBranch(name)}
+                onCheckoutTag={(name) => void runAction('Checking out tag', () => api.checkoutTag(snap.path, name), 'head')}
+                onNewTag={() => {
+                  setModalError(null)
+                  setTagModal(true)
+                }}
+                onDeleteTag={(name) => void onDeleteTag(name)}
+                onPushTag={(name) =>
+                  void runAction(
+                    'Pushing tag',
+                    async () => {
+                      const result = await api.pushTag(snap.path, name)
+                      if (result.ok) await loadRemoteTags()
+                      return result
+                    },
+                    'keep',
+                  )
+                }
+                onCheckoutPull={(number) =>
+                  void runAction('Checking out pull request', async () => {
+                    const result = await api.checkoutPullRequest(snap.path, number)
+                    if (result.ok) await loadPulls()
+                    return result
+                  }, 'head')
+                }
+                onNewPull={() => {
+                  setModalError(null)
+                  setPrBase('main')
+                  setPrModal(true)
+                }}
+                onSelectStash={(entry) => void selectStash(entry)}
+                onNewStash={openStashModal}
+                onApplyStash={(entry) => void runStash('Applying stash', entry, () => api.applyStash(snap.path, entry.selector), false)}
+                onPopStash={(entry) => {
+                  if (!window.confirm(`Apply "${entry.subject}" and remove it from the stash list?`)) return
+                  void runStash('Popping stash', entry, () => api.popStash(snap.path, entry.selector), true)
+                }}
+                onDropStash={(entry) => {
+                  if (!window.confirm(`Drop stash "${entry.subject}"?`)) return
+                  void runStash('Dropping stash', entry, () => api.dropStash(snap.path, entry.selector), true)
+                }}
               />
             </aside>
             <CommitGraph
@@ -574,6 +999,9 @@ export function App() {
               selected={selectedHash}
               onQuery={setQuery}
               onSelect={(hash) => void loadCommit(snap.path, hash, null)}
+              columns={{ hash: layout.hash, author: layout.author, when: layout.when }}
+              onColumnWidth={(column, delta) => resizeHistory(column, delta)}
+              onColumnReset={(column) => setLayout((current) => ({ ...current, [column]: HISTORY_COLUMNS[column].default }))}
             />
             <Detail
               panel={panel}
@@ -586,28 +1014,62 @@ export function App() {
               diff={diffText}
               workPath={workSel?.path ?? null}
               workStaged={workSel?.staged ?? false}
+              stashTitle={stashSel?.subject ?? null}
+              stashMeta={stashSel ? `${stashSel.selector} · ${formatWhen(stashSel.time)}` : null}
               onSelectFile={(file) => void selectFile(file)}
               onCopy={(text) => {
                 void api.copyText(text).then((ok) => {
                   if (ok) showOk('Copied commit hash')
                 })
               }}
+              filesHeight={Number.isFinite(layout.files) ? layout.files : DEFAULT_LAYOUT.files}
+              onFilesHeight={(height) => setLayout((current) => ({ ...current, files: clamp(height, FILES_MIN, FILES_MAX) }))}
+            />
+            </div>
+            <WidthHandle
+              overlay
+              label="Resize sidebar"
+              style={{ left: columns.side }}
+              onDrag={resizeSide}
+              onReset={() => setLayout((current) => ({ ...current, side: DEFAULT_LAYOUT.side }))}
+            />
+            <WidthHandle
+              overlay
+              label="Resize details"
+              style={{ left: `calc(100% - ${columns.detail}px)` }}
+              onDrag={resizeDetail}
+              onReset={() => setLayout((current) => ({ ...current, detail: DEFAULT_LAYOUT.detail }))}
             />
           </div>
+          <WidthHandle
+            axis="y"
+            label="Resize commit area"
+            onDrag={resizeComposer}
+            onReset={() => setLayout((current) => ({ ...current, composer: DEFAULT_LAYOUT.composer }))}
+          />
           <Composer
             changes={snap.changes}
+            changesWidth={layout.changes}
+            height={composerHeight}
             message={message}
+            contributors={snap.contributors ?? []}
+            withUsers={withUsers}
             busy={Boolean(busy)}
             selected={workSel}
             onMessage={setMessage}
-            onCommit={() => {
+            onWithUsers={setWithUsers}
+            onChangesWidth={(width) => setLayout((current) => ({ ...current, changes: width }))}
+            onCommit={(people) => {
               const text = message.trim()
               if (!text) return
               void runAction(
                 'Committing',
                 async () => {
-                  const result = await api.commit(snap.path, text)
-                  if (result.ok) setMessage('')
+                  const result = await api.commit(snap.path, text, people)
+                  if (result.ok) {
+                    setMessage('')
+                    setWithUsers([])
+                  }
                   return result
                 },
                 'head',
@@ -617,8 +1079,10 @@ export function App() {
             onUnstage={(file) => void runAction('Unstaging', () => api.unstage(snap.path, [file]), 'keep')}
             onStageAll={() => void runAction('Staging', () => api.stageAll(snap.path), 'keep')}
             onUnstageAll={() => void runAction('Unstaging', () => api.unstageAll(snap.path), 'keep')}
+            onStash={openStashModal}
             onSelectChange={(change, staged) => void selectChange(change, staged)}
           />
+          </div>
           {branchModal && (
             <BranchModal
               name={branchName}
@@ -627,6 +1091,42 @@ export function App() {
               onName={setBranchName}
               onClose={() => setBranchModal(false)}
               onSubmit={() => void onCreateBranch()}
+            />
+          )}
+          {tagModal && (
+            <TagModal
+              name={tagName}
+              message={tagMessage}
+              error={modalError}
+              busy={Boolean(busy)}
+              onName={setTagName}
+              onMessage={setTagMessage}
+              onClose={() => setTagModal(false)}
+              onSubmit={() => void onCreateTag()}
+            />
+          )}
+          {stashModal && (
+            <StashModal
+              message={stashMessage}
+              includeUntracked={stashUntracked}
+              error={modalError}
+              busy={Boolean(busy)}
+              onMessage={setStashMessage}
+              onIncludeUntracked={setStashUntracked}
+              onClose={() => setStashModal(false)}
+              onSubmit={() => void onCreateStash()}
+            />
+          )}
+          {prModal && (
+            <PullRequestModal
+              title={prTitle}
+              base={prBase}
+              error={modalError}
+              busy={Boolean(busy)}
+              onTitle={setPrTitle}
+              onBase={setPrBase}
+              onClose={() => setPrModal(false)}
+              onSubmit={() => void onCreatePullRequest()}
             />
           )}
         </>
@@ -648,17 +1148,19 @@ export function App() {
           onSelect={(repoPath) => void openPath(repoPath)}
           onToggleFavorite={(repoPath) => setProjects(toggleFavorite(repoPath))}
           onForget={(repoPath) => setProjects(forgetProject(repoPath))}
+          onSettings={() => {
+            setSettingsFrom('projects')
+            setPage('settings')
+          }}
         />
       )}
       {cloneOpen && (
         <CloneModal
           url={cloneUrl}
-          folder={cloneFolder}
           destination={cloneDest}
           error={cloneError}
           busy={Boolean(busy)}
           onUrl={setCloneUrl}
-          onFolder={setCloneFolder}
           onDestination={setCloneDest}
           onBrowse={() => void browseCloneDest()}
           onClose={() => {

@@ -36,6 +36,11 @@ export type Commit = {
   head: boolean
 }
 
+export type Contributor = {
+  name: string
+  email: string
+}
+
 export type Change = {
   path: string
   oldPath?: string
@@ -57,8 +62,52 @@ export type RepoSnapshot = {
   path: string
   header: BranchHeader
   branches: BranchInfo[]
+  tags: TagInfo[]
+  stashes: StashEntry[]
   commits: Commit[]
   changes: Change[]
   remotes: string[]
+  contributors: Contributor[]
   truncated: boolean
 }
+
+export type TagInfo = {
+  name: string
+  commit: string
+  annotated: boolean
+}
+
+export type StashEntry = {
+  index: number
+  selector: string
+  hash: string
+  time: number
+  subject: string
+}
+
+export type RemoteTag = {
+  name: string
+  commit: string
+}
+
+export type RemoteTagList = {
+  remote: string | null
+  tags: RemoteTag[]
+  detail: string | null
+}
+
+export type PullRequest = {
+  number: number
+  title: string
+  url: string
+  head: string
+  base: string
+  author: string
+}
+
+export type PullRequestList = {
+  requests: PullRequest[]
+  detail: string | null
+}
+
+export type PullMode = 'default' | 'ff' | 'ff-only' | 'rebase'

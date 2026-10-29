@@ -2,6 +2,7 @@ import type { Commit } from './types'
 
 export const LANE_WIDTH = 16
 export const ROW_HEIGHT = 36
+export const REF_ROW_HEIGHT = 52
 
 export const LANE_COLORS = [
   '#6cb6ff',

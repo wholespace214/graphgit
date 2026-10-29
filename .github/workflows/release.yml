@@ -14,13 +14,55 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  main-only:
+    name: Tag is on main or pre
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      prerelease: ${{ steps.gate.outputs.prerelease }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require the tag commit to be on main or pre
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/heads/* && "$GITHUB_REF" != "refs/heads/main" && "$GITHUB_REF" != "refs/heads/pre" ]]; then
+            echo "A release can only be started from main or pre."
+            exit 1
+          fi
+          git fetch origin main
+          have_pre=0
+          if git fetch origin pre; then
+            have_pre=1
+          fi
+          if git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$have_pre" == 1 ]] && git merge-base --is-ancestor "$GITHUB_SHA" origin/pre; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "A release tag can only point at a commit on main or pre."
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            git push origin ":refs/tags/${GITHUB_REF_NAME}"
+          fi
+          exit 1
+
   verify:
     name: Verify
+    needs: main-only
     uses: ./.github/workflows/verify.yml
 
   publish:
     name: Publish GitHub release
-    needs: verify
+    needs: [main-only, verify]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -39,3 +81,5 @@ jobs:
           files: installers/*
           generate_release_notes: true
           fail_on_unmatched_files: true
+          prerelease: ${{ needs.main-only.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.main-only.outputs.prerelease == 'true' && 'false' || 'true' }}

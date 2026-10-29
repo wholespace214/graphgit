@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { baseName, formatWhen } from '../format'
 import type { Project } from '../projects'
 import { Logo } from './Logo'
+import { SettingsButton } from './SettingsButton'
 import { WindowControls } from './WindowControls'
 
 export function ProjectsPage({
@@ -18,6 +19,7 @@ export function ProjectsPage({
   onSelect,
   onToggleFavorite,
   onForget,
+  onSettings,
 }: {
   projects: Project[]
   error: string | null
@@ -32,6 +34,7 @@ export function ProjectsPage({
   onSelect: (path: string) => void
   onToggleFavorite: (path: string) => void
   onForget: (path: string) => void
+  onSettings: () => void
 }) {
   const [query, setQuery] = useState('')
   const needle = query.trim().toLowerCase()
@@ -51,6 +54,7 @@ export function ProjectsPage({
         </div>
         <span className="branch-pill">Projects</span>
         <div className="spacer" />
+        <SettingsButton onClick={onSettings} disabled={busy} />
         {busy && <span className="busy-label">{busy}</span>}
         <WindowControls />
       </header>

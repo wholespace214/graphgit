@@ -1,32 +1,28 @@
-import { useEffect, useRef } from 'react'
+import { useEffect } from 'react'
 import { folderNameFromCloneUrl } from '@shared/clone'
 
 export function CloneModal({
   url,
-  folder,
   destination,
   error,
   busy,
   onUrl,
-  onFolder,
   onDestination,
   onBrowse,
   onClose,
   onSubmit,
 }: {
   url: string
-  folder: string
   destination: string
   error: string | null
   busy: boolean
   onUrl: (value: string) => void
-  onFolder: (value: string) => void
   onDestination: (value: string) => void
   onBrowse: () => void
   onClose: () => void
   onSubmit: () => void
 }) {
-  const folderEdited = useRef(false)
+  const folder = folderNameFromCloneUrl(url)
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -49,16 +45,7 @@ export function CloneModal({
         <h2>Clone repository</h2>
         <label>
           Repository URL
-          <input
-            autoFocus
-            value={url}
-            placeholder="https://example.com/team/app.git"
-            onChange={(event) => {
-              const next = event.target.value
-              onUrl(next)
-              if (!folderEdited.current) onFolder(folderNameFromCloneUrl(next))
-            }}
-          />
+          <input autoFocus value={url} placeholder="https://example.com/team/app.git" onChange={(event) => onUrl(event.target.value)} />
         </label>
         <label>
           Destination folder
@@ -69,21 +56,11 @@ export function CloneModal({
             </button>
           </span>
         </label>
-        <label>
-          Folder name
-          <input
-            value={folder}
-            onChange={(event) => {
-              folderEdited.current = true
-              onFolder(event.target.value)
-            }}
-          />
-        </label>
-        {destination && folder.trim() && (
+        {destination.trim() && url.trim() && (
           <p className="muted clone-dest">
             {destination.replace(/[\\/]+$/, '')}
             {destination.includes('\\') ? '\\' : '/'}
-            {folder.trim()}
+            {folder}
           </p>
         )}
         {error && <p className="form-error">{error}</p>}
@@ -91,7 +68,7 @@ export function CloneModal({
           <button type="button" className="ghost" onClick={onClose} disabled={busy}>
             Cancel
           </button>
-          <button className="primary" type="submit" disabled={busy || !url.trim() || !destination.trim() || !folder.trim()}>
+          <button className="primary" type="submit" disabled={busy || !url.trim() || !destination.trim()}>
             Clone
           </button>
         </div>
