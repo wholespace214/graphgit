@@ -1,9 +1,10 @@
-import type { BranchInfo, PullRequest, RemoteTag, TagInfo } from '@shared/types'
+import type { BranchInfo, PullRequest, RemoteTag, StashEntry, TagInfo } from '@shared/types'
 import { BranchList } from './BranchList'
 import { PullRequestList } from './PullRequestList'
+import { StashList } from './StashList'
 import { TagList } from './TagList'
 
-export type SideTab = 'branches' | 'tags' | 'pulls'
+export type SideTab = 'branches' | 'tags' | 'pulls' | 'stash'
 
 export function RepoSide({
   tab,
@@ -18,6 +19,8 @@ export function RepoSide({
   detached,
   pulls,
   pullDetail,
+  stashes,
+  selectedStash,
   busy,
   canPush,
   onCheckout,
@@ -29,6 +32,11 @@ export function RepoSide({
   onPushTag,
   onCheckoutPull,
   onNewPull,
+  onSelectStash,
+  onNewStash,
+  onApplyStash,
+  onPopStash,
+  onDropStash,
 }: {
   tab: SideTab
   onTab: (tab: SideTab) => void
@@ -42,6 +50,8 @@ export function RepoSide({
   detached: boolean
   pulls: PullRequest[]
   pullDetail: string | null
+  stashes: StashEntry[]
+  selectedStash: string | null
   busy: boolean
   canPush: boolean
   onCheckout: (name: string) => void
@@ -53,6 +63,11 @@ export function RepoSide({
   onPushTag: (name: string) => void
   onCheckoutPull: (number: number) => void
   onNewPull: () => void
+  onSelectStash: (entry: StashEntry) => void
+  onNewStash: () => void
+  onApplyStash: (entry: StashEntry) => void
+  onPopStash: (entry: StashEntry) => void
+  onDropStash: (entry: StashEntry) => void
 }) {
   return (
     <>
@@ -65,6 +80,9 @@ export function RepoSide({
         </Tab>
         <Tab id="pulls" current={tab} onTab={onTab}>
           PRs
+        </Tab>
+        <Tab id="stash" current={tab} onTab={onTab}>
+          Stash
         </Tab>
       </div>
       <div className="sidebar-body">
@@ -90,6 +108,18 @@ export function RepoSide({
         )}
         {tab === 'pulls' && (
           <PullRequestList requests={pulls} detail={pullDetail} busy={busy} onCheckout={onCheckoutPull} onCreate={onNewPull} />
+        )}
+        {tab === 'stash' && (
+          <StashList
+            stashes={stashes}
+            selected={selectedStash}
+            busy={busy}
+            onSelect={onSelectStash}
+            onCreate={onNewStash}
+            onApply={onApplyStash}
+            onPop={onPopStash}
+            onDrop={onDropStash}
+          />
         )}
       </div>
     </>

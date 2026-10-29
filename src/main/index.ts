@@ -2,6 +2,7 @@ import { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, type WebContents 
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { PullMode } from '../shared/types'
 import {
   checkout,
   checkoutPullRequest,
@@ -15,6 +16,7 @@ import {
   createTag,
   deleteBranch,
   deleteTag,
+  fetchAll,
   fetchRemote,
   initRepo,
   listPullRequests,
@@ -23,6 +25,11 @@ import {
   pull,
   push,
   pushTag,
+  applyStash,
+  dropStash,
+  popStash,
+  saveStash,
+  stashDiff,
   stage,
   stageAll,
   unstage,
@@ -109,6 +116,11 @@ function createWindow() {
   void waitForRenderer(devUrl).then(() => {
     if (!win.isDestroyed()) void win.loadURL(devUrl)
   })
+}
+
+function pullMode(mode: unknown): PullMode {
+  if (mode === 'ff' || mode === 'ff-only' || mode === 'rebase' || mode === 'default') return mode
+  return 'default'
 }
 
 function handle<T>(channel: string, fn: (...args: unknown[]) => Promise<T>) {
@@ -214,6 +226,13 @@ function registerIpc() {
   handle('repo:delete-tag', (repoPath, name) => deleteTag(String(repoPath ?? ''), String(name ?? '')))
   handle('repo:checkout-tag', (repoPath, name) => checkoutTag(String(repoPath ?? ''), String(name ?? '')))
   handle('repo:push-tag', (repoPath, name) => pushTag(String(repoPath ?? ''), String(name ?? '')))
+  handle('repo:stash-save', (repoPath, message, includeUntracked) =>
+    saveStash(String(repoPath ?? ''), String(message ?? ''), includeUntracked === true),
+  )
+  handle('repo:stash-apply', (repoPath, selector) => applyStash(String(repoPath ?? ''), String(selector ?? '')))
+  handle('repo:stash-pop', (repoPath, selector) => popStash(String(repoPath ?? ''), String(selector ?? '')))
+  handle('repo:stash-drop', (repoPath, selector) => dropStash(String(repoPath ?? ''), String(selector ?? '')))
+  handle('repo:stash-diff', (repoPath, selector) => stashDiff(String(repoPath ?? ''), String(selector ?? '')))
   handle('repo:remote-tags', (repoPath) => listRemoteTags(String(repoPath ?? '')))
   handle('repo:pull-requests', (repoPath) => listPullRequests(String(repoPath ?? '')))
   handle('repo:checkout-pr', (repoPath, number) => checkoutPullRequest(String(repoPath ?? ''), Number(number)))
@@ -223,9 +242,10 @@ function registerIpc() {
   handle('repo:clone', (url, parentDir, folderName) =>
     cloneRepo(String(url ?? ''), String(parentDir ?? ''), String(folderName ?? '')),
   )
-  handle('repo:pull', (repoPath) => pull(String(repoPath ?? '')))
+  handle('repo:pull', (repoPath, mode) => pull(String(repoPath ?? ''), pullMode(mode)))
   handle('repo:push', (repoPath) => push(String(repoPath ?? '')))
   handle('repo:fetch', (repoPath) => fetchRemote(String(repoPath ?? '')))
+  handle('repo:fetch-all', (repoPath) => fetchAll(String(repoPath ?? '')))
   handle('repo:init', (repoPath) => initRepo(String(repoPath ?? '')))
 }
 

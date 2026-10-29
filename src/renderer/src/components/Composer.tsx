@@ -21,6 +21,7 @@ export function Composer({
   onUnstage,
   onStageAll,
   onUnstageAll,
+  onStash,
   onSelectChange,
 }: {
   changes: Change[]
@@ -39,6 +40,7 @@ export function Composer({
   onUnstage: (path: string) => void
   onStageAll: () => void
   onUnstageAll: () => void
+  onStash: () => void
   onSelectChange: (change: Change, staged: boolean) => void
 }) {
   const staged = changes.filter((change) => change.staged)
@@ -111,7 +113,12 @@ export function Composer({
       <div className="changes">
         <div className="panel-head">
           <span>Changes</span>
-          <span className="muted">{changes.length}</span>
+          <span className="panel-head-actions">
+            <button className="text-button" onClick={onStash} disabled={busy || changes.length === 0}>
+              Stash
+            </button>
+            <span className="muted">{changes.length}</span>
+          </span>
         </div>
         <div className="changes-scroll">
           {conflicts && <p className="form-error pad">Resolve conflicts before committing.</p>}

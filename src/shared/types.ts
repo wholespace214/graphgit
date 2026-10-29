@@ -63,6 +63,7 @@ export type RepoSnapshot = {
   header: BranchHeader
   branches: BranchInfo[]
   tags: TagInfo[]
+  stashes: StashEntry[]
   commits: Commit[]
   changes: Change[]
   remotes: string[]
@@ -74,6 +75,14 @@ export type TagInfo = {
   name: string
   commit: string
   annotated: boolean
+}
+
+export type StashEntry = {
+  index: number
+  selector: string
+  hash: string
+  time: number
+  subject: string
 }
 
 export type RemoteTag = {
@@ -100,3 +109,5 @@ export type PullRequestList = {
   requests: PullRequest[]
   detail: string | null
 }
+
+export type PullMode = 'default' | 'ff' | 'ff-only' | 'rebase'

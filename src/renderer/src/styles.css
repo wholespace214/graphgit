@@ -116,6 +116,48 @@ button:disabled { cursor: default; }
   padding-top: 0;
   padding-bottom: 0;
 }
+.split-button {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  -webkit-app-region: no-drag;
+}
+.split-button .split-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: 0;
+}
+.split-button .split-caret {
+  width: 22px;
+  padding: 0;
+  justify-content: center;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.split-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  min-width: 280px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-modal);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+.split-menu button {
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  text-align: left;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.split-menu button:hover { background: var(--bg-overlay); }
+.chrome { position: relative; z-index: 5; }
 .toolbar button,
 .toolbar input,
 .toolbar .repo-id,
@@ -207,13 +249,14 @@ button:disabled { cursor: default; }
 }
 .sidebar, .detail, .graph-panel { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .sidebar { border-right: 1px solid var(--line); background: var(--bg-raised); }
-.side-tabs { display: flex; flex: none; border-bottom: 1px solid var(--line); }
+.side-tabs { display: flex; flex: none; border-bottom: 1px solid var(--line); overflow-x: auto; }
 .side-tabs button {
-  flex: 1;
+  flex: 1 0 auto;
   border: 0;
   background: transparent;
   color: var(--muted);
-  padding: 8px 4px;
+  padding: 8px 8px;
+  white-space: nowrap;
 }
 .side-tabs button.on { color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
 .sidebar-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -361,6 +404,7 @@ button:disabled { cursor: default; }
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
+.commit-head,
 .branch, .recent, .file-row, .text-button, .hash-button, .commit {
   background: transparent;
   border: 0;
@@ -376,7 +420,23 @@ button:disabled { cursor: default; }
   gap: 8px;
 }
 .branch:hover { background: var(--bg-overlay); }
+.branch.on, .branch.on:hover { background: var(--selected); }
 .branch.current, .branch.current:hover { background: var(--current); color: var(--current-text); }
+.stash-row {
+  width: calc(100% - 12px);
+  margin: 1px 6px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.stash-row:hover, .stash-row.on { background: var(--selected); }
+.stash-main { flex-direction: column; align-items: flex-start; gap: 2px; }
+.stash-main .branch-name { width: 100%; }
+.stash-actions { display: flex; justify-content: flex-end; align-items: center; gap: 2px; }
+.panel-head-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .branch-main {
   flex: 1;
   min-width: 0;
@@ -393,29 +453,54 @@ button:disabled { cursor: default; }
 .current-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-left: auto; flex: none; }
 
 .graph-scroll { flex: 1; }
-.commit {
+.commit-row {
   display: grid;
-  grid-template-columns: var(--lanes) minmax(0, 1fr) 72px 130px 80px;
+  grid-template-columns: var(--lanes) minmax(0, 1fr) var(--col-hash) var(--col-author) var(--col-when);
   align-items: center;
   width: 100%;
-  min-width: calc(var(--lanes) + 72px + 130px + 80px + 180px);
+  min-width: 0;
+}
+.commit-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  height: 28px;
+  padding: 0 12px 0 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+}
+.commit-head-cell {
+  position: relative;
+  min-width: 0;
+  overflow: visible;
+  padding-left: 8px;
+}
+.commit-head-cell.end { text-align: right; }
+.commit {
   height: 36px;
   padding: 0 12px 0 0;
+}
+.commit.tall {
+  height: 52px;
+  padding: 2px 12px 2px 0;
 }
 .commit:hover { background: var(--hover); }
 .commit.selected { background: var(--selected); }
 .commit.dim { opacity: 0.32; }
 .graph-svg { display: block; flex: none; }
 .graph-svg line, .graph-svg path { stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.subject { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.subject { display: flex; flex-direction: column; justify-content: center; align-items: stretch; gap: 3px; min-width: 0; overflow: hidden; }
 .subject .title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pills { display: flex; gap: 4px; flex: none; max-width: 46%; overflow: hidden; }
-.pill { font-size: 11px; line-height: 1.4; padding: 0 6px; border-radius: 999px; border: 1px solid transparent; white-space: nowrap; }
-.pill.branch { background: var(--pill-bg); color: var(--pill-text); }
-.pill.branch.current, .pill.head { background: var(--accent-soft); color: var(--accent-text); }
-.pill.remote { background: transparent; border-color: var(--line-strong); color: var(--muted); }
-.pill.tag { background: var(--tag-bg); color: var(--tag-text); }
+.pills { display: flex; align-items: center; gap: 4px; min-width: 0; width: 100%; overflow: hidden; }
+.pill { font-size: 11px; line-height: 1.4; padding: 0 6px; border-radius: 999px; border: 1px solid transparent; white-space: nowrap; flex: 0 1 auto; width: auto; max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.pill.ref-branch { background: var(--pill-bg); color: var(--pill-text); }
+.pill.ref-branch.current, .pill.ref-head { background: var(--accent-soft); color: var(--accent-text); }
+.pill.ref-remote { background: transparent; border-color: var(--line-strong); color: var(--muted); }
+.pill.ref-tag { background: var(--tag-bg); color: var(--tag-text); }
 .short-hash, .author, .when { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
+.short-hash, .author { padding-left: 8px; }
 .when { text-align: right; }
 .mono, .diff, .hash-button, .commit-body, textarea { font-family: "Cascadia Code", "Cascadia Mono", Consolas, monospace; }
 
@@ -490,6 +575,17 @@ button:disabled { cursor: default; }
   bottom: 0;
   width: 8px;
   margin-left: -4px;
+}
+.width-handle.column {
+  position: absolute;
+  left: -4px;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+}
+.width-handle.column::after {
+  height: 14px;
+  margin-top: -7px;
 }
 .width-handle.horizontal {
   flex: none;
@@ -654,6 +750,8 @@ input:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--foc
 }
 .modal h2 { margin: 0; }
 .modal label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 12px; }
+.modal label.check-row { flex-direction: row; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
+.modal label.check-row input { width: auto; }
 .modal input {
   width: 100%;
   background: var(--bg);

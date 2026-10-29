@@ -1,4 +1,4 @@
-import type { Contributor, FileChange, PullRequestList, RemoteTagList, RepoSnapshot, Result } from './types'
+import type { Contributor, FileChange, PullMode, PullRequestList, RemoteTagList, RepoSnapshot, Result } from './types'
 
 export type CommitFiles = {
   files: FileChange[]
@@ -24,14 +24,20 @@ export type GraphGitApi = {
   deleteTag: (repoPath: string, name: string) => Promise<Result<string>>
   checkoutTag: (repoPath: string, name: string) => Promise<Result<string>>
   pushTag: (repoPath: string, name: string) => Promise<Result<string>>
+  saveStash: (repoPath: string, message: string, includeUntracked: boolean) => Promise<Result<string>>
+  applyStash: (repoPath: string, selector: string) => Promise<Result<string>>
+  popStash: (repoPath: string, selector: string) => Promise<Result<string>>
+  dropStash: (repoPath: string, selector: string) => Promise<Result<string>>
+  stashDiff: (repoPath: string, selector: string) => Promise<Result<string>>
   listRemoteTags: (repoPath: string) => Promise<Result<RemoteTagList>>
   listPullRequests: (repoPath: string) => Promise<Result<PullRequestList>>
   checkoutPullRequest: (repoPath: string, number: number) => Promise<Result<string>>
   createPullRequest: (repoPath: string, title: string, base: string) => Promise<Result<string>>
   cloneRepo: (url: string, parentDir: string, folderName: string) => Promise<Result<string>>
-  pull: (repoPath: string) => Promise<Result<string>>
+  pull: (repoPath: string, mode?: PullMode) => Promise<Result<string>>
   push: (repoPath: string) => Promise<Result<string>>
   fetch: (repoPath: string) => Promise<Result<string>>
+  fetchAll: (repoPath: string) => Promise<Result<string>>
   initRepo: (repoPath: string) => Promise<Result<string>>
   copyText: (text: string) => Promise<boolean>
   watchRepo: (repoPath: string, cb: () => void) => () => void

@@ -1,12 +1,32 @@
+export type HistoryColumn = 'hash' | 'author' | 'when'
+
 export type LayoutWidths = {
   side: number
   detail: number
   changes: number | null
   composer: number
   files: number
+  hash: number
+  author: number
+  when: number
 }
 
-export const DEFAULT_LAYOUT: LayoutWidths = { side: 232, detail: 400, changes: null, composer: 300, files: 150 }
+export const DEFAULT_LAYOUT: LayoutWidths = {
+  side: 232,
+  detail: 400,
+  changes: null,
+  composer: 300,
+  files: 150,
+  hash: 72,
+  author: 130,
+  when: 84,
+}
+
+export const HISTORY_COLUMNS: Record<HistoryColumn, { min: number; max: number; default: number }> = {
+  hash: { min: 56, max: 220, default: DEFAULT_LAYOUT.hash },
+  author: { min: 72, max: 320, default: DEFAULT_LAYOUT.author },
+  when: { min: 64, max: 180, default: DEFAULT_LAYOUT.when },
+}
 
 export const SIDE_MIN = 180
 export const SIDE_MAX = 480
@@ -37,12 +57,18 @@ export function readLayout(): LayoutWidths {
     const changes = value.changes == null ? null : Number(value.changes)
     const composer = Number(value.composer)
     const files = Number(value.files)
+    const hash = Number(value.hash)
+    const author = Number(value.author)
+    const when = Number(value.when)
     return {
       side: Number.isFinite(side) ? clamp(side, SIDE_MIN, SIDE_MAX) : DEFAULT_LAYOUT.side,
       detail: Number.isFinite(detail) ? clamp(detail, DETAIL_MIN, DETAIL_MAX) : DEFAULT_LAYOUT.detail,
       changes: changes != null && Number.isFinite(changes) ? Math.max(CHANGES_MIN, changes) : null,
       composer: Number.isFinite(composer) ? clamp(composer, COMPOSER_MIN, COMPOSER_MAX) : DEFAULT_LAYOUT.composer,
       files: Number.isFinite(files) ? clamp(files, FILES_MIN, FILES_MAX) : DEFAULT_LAYOUT.files,
+      hash: Number.isFinite(hash) ? clamp(hash, HISTORY_COLUMNS.hash.min, HISTORY_COLUMNS.hash.max) : DEFAULT_LAYOUT.hash,
+      author: Number.isFinite(author) ? clamp(author, HISTORY_COLUMNS.author.min, HISTORY_COLUMNS.author.max) : DEFAULT_LAYOUT.author,
+      when: Number.isFinite(when) ? clamp(when, HISTORY_COLUMNS.when.min, HISTORY_COLUMNS.when.max) : DEFAULT_LAYOUT.when,
     }
   } catch {
     return DEFAULT_LAYOUT

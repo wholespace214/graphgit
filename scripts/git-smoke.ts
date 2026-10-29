@@ -17,6 +17,7 @@ import {
   createTag,
   deleteBranch,
   deleteTag,
+  fetchAll,
   fetchRemote,
   initRepo,
   listPullRequests,
@@ -29,8 +30,14 @@ import {
   parseLog,
   parseNameStatusZ,
   parseRemoteTags,
+  parseStashes,
   parseStatus,
   parseTags,
+  applyStash,
+  dropStash,
+  popStash,
+  saveStash,
+  stashDiff,
   pushTag,
   githubSlugFromUrl,
   pull,
@@ -117,6 +124,10 @@ function parserTests() {
   const tagCommit = 'c'.repeat(40)
   const tagObject = 'd'.repeat(40)
   const peeled = 'e'.repeat(40)
+  const stashHash = 'f'.repeat(40)
+  assert.deepEqual(parseStashes(`stash@{0}\x1f${stashHash}\x1f1700000000\x1fOn main: Keep this\nstash@{no}\tbad\n`), [
+    { index: 0, selector: 'stash@{0}', hash: stashHash, time: 1700000000, subject: 'On main: Keep this' },
+  ])
   assert.deepEqual(parseTags(`v0.1.0\t${tagCommit}\t\nv1.0.0\t${tagObject}\t${peeled}\n`), [
     { name: 'v0.1.0', commit: tagCommit, annotated: false },
     { name: 'v1.0.0', commit: peeled, annotated: true },
@@ -214,6 +225,7 @@ async function main() {
   assert.ok(opened.data.commits.some((commit) => commit.parents.length === 2))
   assert.ok(opened.data.commits.some((commit) => commit.head && commit.refs.some((ref) => ref.kind === 'tag')))
   assert.ok(opened.data.tags.some((tag) => tag.name === 'v0.1.0'))
+  assert.equal(opened.data.stashes.length, 0)
   const remoteTags = await listRemoteTags(demo)
   assert.equal(remoteTags.ok, true, remoteTags.ok ? '' : remoteTags.error)
   if (remoteTags.ok) {
@@ -304,7 +316,10 @@ async function main() {
   assert.equal(createdRepo.ok, true)
   const fresh = await loadRepo(emptyDir)
   assert.equal(fresh.ok, true)
-  if (fresh.ok) assert.equal(fresh.data.commits.length, 0)
+  if (fresh.ok) {
+    assert.equal(fresh.data.commits.length, 0)
+    assert.equal(fresh.data.stashes.length, 0)
+  }
 
   const commitDir = path.join(tmpdir(), 'graphgit-commit-test')
   await rm(commitDir, { recursive: true, force: true })
@@ -373,11 +388,158 @@ async function main() {
       assert.equal(pulls.data.requests.length, 0)
       assert.match(pulls.data.detail ?? '', /GitHub remote/)
     }
+    const rejectedStash = await dropStash(cloned.data, 'stash@{0}; touch owned')
+    assert.equal(rejectedStash.ok, false)
+    await writeFile(path.join(cloned.data, 'README.md'), '# GraphGit demo\n\nStash me.\n')
+    const saved = await saveStash(cloned.data, 'Keep this', false)
+    assert.equal(saved.ok, true, saved.ok ? '' : saved.error)
+    const stashed = await loadRepo(cloned.data)
+    assert.equal(stashed.ok, true)
+    if (stashed.ok) {
+      assert.equal(stashed.data.changes.some((change) => change.path === 'README.md'), false)
+      const entry = stashed.data.stashes[0]
+      assert.ok(entry)
+      if (entry) {
+        assert.equal(entry.selector, 'stash@{0}')
+        assert.match(entry.subject, /Keep this/)
+        const shown = await stashDiff(cloned.data, entry.selector)
+        assert.equal(shown.ok, true, shown.ok ? '' : shown.error)
+        if (shown.ok) assert.match(shown.data, /Stash me/)
+        const applied = await applyStash(cloned.data, entry.selector)
+        assert.equal(applied.ok, true, applied.ok ? '' : applied.error)
+        const restored = await loadRepo(cloned.data)
+        assert.equal(restored.ok, true)
+        if (restored.ok) {
+          assert.equal(restored.data.stashes.length, 1)
+          assert.ok(restored.data.changes.some((change) => change.path === 'README.md'))
+        }
+        assert.equal((await dropStash(cloned.data, entry.selector)).ok, true)
+      }
+    }
+    await writeFile(path.join(cloned.data, 'extra.txt'), 'extra\n')
+    const withExtra = await saveStash(cloned.data, 'With extra', true)
+    assert.equal(withExtra.ok, true, withExtra.ok ? '' : withExtra.error)
+    const hidden = await loadRepo(cloned.data)
+    assert.equal(hidden.ok, true)
+    if (hidden.ok) {
+      assert.equal(hidden.data.changes.some((change) => change.path === 'extra.txt'), false)
+      const entry = hidden.data.stashes[0]
+      assert.ok(entry)
+      if (entry) assert.equal((await popStash(cloned.data, entry.selector)).ok, true)
+    }
+    const afterPop = await loadRepo(cloned.data)
+    assert.equal(afterPop.ok, true)
+    if (afterPop.ok) {
+      assert.equal(afterPop.data.stashes.length, 0)
+      assert.ok(afterPop.data.changes.some((change) => change.path === 'extra.txt'))
+    }
   }
   const rejected = await cloneRepo('-bad', cloneParent, 'nope')
   assert.equal(rejected.ok, false)
 
+  await syncModeTests()
+
   console.log('smoke ok')
+}
+
+async function syncModeTests() {
+  const root = path.join(tmpdir(), 'graphgit-sync-test')
+  await rm(root, { recursive: true, force: true })
+  await mkdir(root)
+  const lonely = path.join(root, 'lonely')
+  await mkdir(lonely)
+  demoGit(lonely, ['init', '-b', 'main'])
+  assert.equal((await fetchAll(lonely)).ok, false)
+
+  const origin = path.join(root, 'origin.git')
+  const extra = path.join(root, 'extra.git')
+  const local = path.join(root, 'local')
+  const other = path.join(root, 'other')
+  const extraWork = path.join(root, 'extra-work')
+  demoGit(root, ['init', '--bare', '-b', 'main', origin])
+  demoGit(root, ['init', '--bare', '-b', 'main', extra])
+  await mkdir(local)
+  demoGit(local, ['init', '-b', 'main'])
+  await writeFile(path.join(local, 'a.txt'), 'one\n')
+  demoGit(local, ['add', 'a.txt'])
+  demoGit(local, ['commit', '-m', 'one'])
+  demoGit(local, ['remote', 'add', 'origin', origin])
+  demoGit(local, ['push', '-u', 'origin', 'main'])
+  demoGit(local, ['remote', 'add', 'extra', extra])
+  demoGit(local, ['push', 'extra', 'main'])
+
+  demoGit(root, ['clone', origin, other])
+  await writeFile(path.join(other, 'b.txt'), 'two\n')
+  demoGit(other, ['add', 'b.txt'])
+  demoGit(other, ['commit', '-m', 'two'])
+  demoGit(other, ['push'])
+
+  demoGit(root, ['clone', extra, extraWork])
+  await writeFile(path.join(extraWork, 'e.txt'), 'extra\n')
+  demoGit(extraWork, ['add', 'e.txt'])
+  demoGit(extraWork, ['commit', '-m', 'on extra'])
+  demoGit(extraWork, ['push'])
+
+  const fetched = await fetchAll(local)
+  assert.equal(fetched.ok, true, fetched.ok ? '' : fetched.error)
+  const afterFetch = await loadRepo(local)
+  assert.equal(afterFetch.ok, true)
+  if (!afterFetch.ok) return
+  assert.equal(afterFetch.data.header.behind, 1)
+  assert.ok(afterFetch.data.commits.some((commit) => commit.subject === 'on extra'))
+  assert.ok(afterFetch.data.branches.some((branch) => branch.name === 'extra/main'))
+
+  const forwardedPull = await pull(local, 'ff-only')
+  assert.equal(forwardedPull.ok, true, forwardedPull.ok ? '' : forwardedPull.error)
+  const forwarded = await loadRepo(local)
+  assert.equal(forwarded.ok, true)
+  if (!forwarded.ok) return
+  assert.equal(forwarded.data.header.behind, 0)
+  assert.ok(forwarded.data.commits.some((commit) => commit.subject === 'two' && commit.head))
+
+  await writeFile(path.join(local, 'c.txt'), 'local\n')
+  demoGit(local, ['add', 'c.txt'])
+  demoGit(local, ['commit', '-m', 'local side'])
+  await writeFile(path.join(other, 'd.txt'), 'remote\n')
+  demoGit(other, ['add', 'd.txt'])
+  demoGit(other, ['commit', '-m', 'remote side'])
+  demoGit(other, ['push'])
+  assert.equal((await pull(local, 'ff-only')).ok, false)
+  const merged = await pull(local, 'ff')
+  assert.equal(merged.ok, true, merged.ok ? '' : merged.error)
+  const mergedRepo = await loadRepo(local)
+  assert.equal(mergedRepo.ok, true)
+  if (!mergedRepo.ok) return
+  assert.equal(mergedRepo.data.commits.find((commit) => commit.head)?.parents.length, 2)
+
+  const rebaseOrigin = path.join(root, 'rebase.git')
+  const rebaseLocal = path.join(root, 'rebase-local')
+  const rebaseOther = path.join(root, 'rebase-other')
+  demoGit(root, ['init', '--bare', '-b', 'main', rebaseOrigin])
+  await mkdir(rebaseLocal)
+  demoGit(rebaseLocal, ['init', '-b', 'main'])
+  await writeFile(path.join(rebaseLocal, 'base.txt'), 'base\n')
+  demoGit(rebaseLocal, ['add', 'base.txt'])
+  demoGit(rebaseLocal, ['commit', '-m', 'base'])
+  demoGit(rebaseLocal, ['remote', 'add', 'origin', rebaseOrigin])
+  demoGit(rebaseLocal, ['push', '-u', 'origin', 'main'])
+  demoGit(root, ['clone', rebaseOrigin, rebaseOther])
+  await writeFile(path.join(rebaseLocal, 'local.txt'), 'mine\n')
+  demoGit(rebaseLocal, ['add', 'local.txt'])
+  demoGit(rebaseLocal, ['commit', '-m', 'local side'])
+  await writeFile(path.join(rebaseOther, 'remote.txt'), 'theirs\n')
+  demoGit(rebaseOther, ['add', 'remote.txt'])
+  demoGit(rebaseOther, ['commit', '-m', 'remote side'])
+  demoGit(rebaseOther, ['push'])
+  const rebased = await pull(rebaseLocal, 'rebase')
+  assert.equal(rebased.ok, true, rebased.ok ? '' : rebased.error)
+  const rebaseRepo = await loadRepo(rebaseLocal)
+  assert.equal(rebaseRepo.ok, true)
+  if (!rebaseRepo.ok) return
+  const head = rebaseRepo.data.commits.find((commit) => commit.head)
+  assert.equal(head?.subject, 'local side')
+  assert.equal(head?.parents.length, 1)
+  assert.ok(rebaseRepo.data.commits.some((commit) => commit.subject === 'remote side'))
 }
 
 main().catch((error: unknown) => {

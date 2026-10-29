@@ -5,6 +5,7 @@ export function WidthHandle({
   label,
   axis = 'x',
   overlay,
+  column,
   style,
   onDrag,
   onReset,
@@ -12,12 +13,16 @@ export function WidthHandle({
   label: string
   axis?: 'x' | 'y'
   overlay?: boolean
+  column?: boolean
   style?: CSSProperties
   onDrag: (delta: number) => void
   onReset: () => void
 }) {
   const origin = useRef(0)
   const horizontal = axis === 'y'
+  const className = ['width-handle', overlay ? 'overlay' : '', horizontal ? 'horizontal' : '', column ? 'column' : '']
+    .filter(Boolean)
+    .join(' ')
 
   function endDrag(event: PointerEvent<HTMLDivElement>) {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
@@ -28,7 +33,7 @@ export function WidthHandle({
 
   return (
     <div
-      className={overlay ? 'width-handle overlay' : horizontal ? 'width-handle horizontal' : 'width-handle'}
+      className={className}
       role="separator"
       aria-orientation={horizontal ? 'horizontal' : 'vertical'}
       aria-label={label}

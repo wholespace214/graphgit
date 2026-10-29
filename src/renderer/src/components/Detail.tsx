@@ -17,12 +17,14 @@ export function Detail({
   diff,
   workPath,
   workStaged,
+  stashTitle,
+  stashMeta,
   onSelectFile,
   onCopy,
   filesHeight,
   onFilesHeight,
 }: {
-  panel: 'commit' | 'work'
+  panel: 'commit' | 'work' | 'stash'
   loading: boolean
   error: string | null
   commit: Commit | null
@@ -32,6 +34,8 @@ export function Detail({
   diff: string
   workPath: string | null
   workStaged: boolean
+  stashTitle: string | null
+  stashMeta: string | null
   onSelectFile: (path: string) => void
   onCopy: (text: string) => void
   filesHeight: number
@@ -53,7 +57,17 @@ export function Detail({
 
   return (
     <aside className="detail" ref={rootRef}>
-      {panel === 'work' && workPath ? (
+      {panel === 'stash' && stashTitle !== null ? (
+        <>
+          <div className="detail-head">
+            <h2 title={stashTitle}>{stashTitle || 'Stash'}</h2>
+            {stashMeta && <p className="meta">{stashMeta}</p>}
+          </div>
+          <div className="diff-wrap">
+            {loading ? <p className="muted pad">Loading diff…</p> : <DiffView text={error ?? diff} />}
+          </div>
+        </>
+      ) : panel === 'work' && workPath ? (
         <>
           <div className="detail-head">
             <h2 title={workPath}>{workPath}</h2>

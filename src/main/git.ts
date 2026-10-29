@@ -3,7 +3,7 @@ import { existsSync, statSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { cloneUrlError, folderNameError } from '../shared/clone'
-import type { BranchHeader, BranchInfo, Change, Commit, Contributor, FileChange, PullRequest, RefChip, RemoteTag, RemoteTagList, RepoSnapshot, Result, TagInfo } from '../shared/types'
+import type { BranchHeader, BranchInfo, Change, Commit, Contributor, FileChange, PullMode, PullRequest, RefChip, RemoteTag, RemoteTagList, RepoSnapshot, Result, StashEntry, TagInfo } from '../shared/types'
 
 const LOG_LIMIT = 500
 const OUTPUT_CAP = 500_000
@@ -156,22 +156,29 @@ function runGit(
 export function parseDecoration(decoration: string): RefChip[] {
   if (!decoration.trim()) return []
   const chips: RefChip[] = []
+  const seen = new Set<string>()
+  const add = (chip: RefChip) => {
+    const key = `${chip.kind}:${chip.name}`
+    if (seen.has(key)) return
+    seen.add(key)
+    chips.push(chip)
+  }
   for (const part of decoration.split(', ')) {
     if (!part || part.endsWith('/HEAD')) continue
     if (part === 'HEAD') {
-      chips.push({ kind: 'head', name: 'detached' })
+      add({ kind: 'head', name: 'detached' })
       continue
     }
     if (part.startsWith('HEAD -> ')) {
-      chips.push({ kind: 'branch', name: part.slice('HEAD -> '.length), current: true })
+      add({ kind: 'branch', name: part.slice('HEAD -> '.length), current: true })
       continue
     }
     if (part.startsWith('tag: ')) {
-      chips.push({ kind: 'tag', name: part.slice(5) })
+      add({ kind: 'tag', name: part.slice(5) })
       continue
     }
-    if (part.includes('/')) chips.push({ kind: 'remote', name: part })
-    else chips.push({ kind: 'branch', name: part })
+    if (part.includes('/')) add({ kind: 'remote', name: part })
+    else add({ kind: 'branch', name: part })
   }
   return chips
 }
@@ -339,6 +346,31 @@ export function parseBranches(stdout: string): BranchInfo[] {
     })
   }
   return branches
+}
+
+const STASH_SELECTOR = /^stash@\{(\d+)\}$/
+
+export function parseStashes(stdout: string): StashEntry[] {
+  const entries: StashEntry[] = []
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.trim()) continue
+    const parts = line.split('\x1f')
+    if (parts.length < 4) continue
+    const selector = parts[0] ?? ''
+    const hash = parts[1] ?? ''
+    const time = Number(parts[2])
+    const subject = parts.slice(3).join('\x1f').trim()
+    const match = STASH_SELECTOR.exec(selector)
+    if (!match || !/^[0-9a-f]{40}$/i.test(hash) || !Number.isFinite(time)) continue
+    entries.push({
+      index: Number(match[1]),
+      selector,
+      hash,
+      time,
+      subject: subject || selector,
+    })
+  }
+  return entries
 }
 
 export function parseTags(stdout: string): TagInfo[] {
@@ -541,7 +573,7 @@ async function untrackedPreview(repo: string, file: string): Promise<string> {
 export function loadRepo(repoPath: string): Promise<Result<RepoSnapshot>> {
   return wrap(async () => {
     const repo = await resolveRepo(repoPath)
-    const [statusResult, logResult, branchResult, remoteResult, tagResult, peopleResult, emailResult] = await Promise.all([
+    const [statusResult, logResult, branchResult, remoteResult, tagResult, stashResult, peopleResult, emailResult] = await Promise.all([
       runGit(repo, ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '-b', '-uall'], { check: true }),
       runGit(
         repo,
@@ -573,6 +605,7 @@ export function loadRepo(repoPath: string): Promise<Result<RepoSnapshot>> {
         ],
         { check: true },
       ),
+      runGit(repo, ['--no-optional-locks', 'stash', 'list', '--format=%gd%x1f%H%x1f%ct%x1f%gs'], { check: true }),
       runGit(repo, ['--no-optional-locks', 'log', '--all', '-n', '500', '--format=%an%x1f%ae'], { check: false }),
       runGit(repo, ['config', '--get', 'user.email'], { check: false }),
     ])
@@ -598,8 +631,9 @@ export function loadRepo(repoPath: string): Promise<Result<RepoSnapshot>> {
       .map((line) => line.trim())
       .filter(Boolean)
     const tags = parseTags(tagResult.stdout)
+    const stashes = parseStashes(stashResult.stdout)
     const contributors = peopleResult.code === 0 ? parseContributors(peopleResult.stdout, emailResult.code === 0 ? emailResult.stdout : '') : []
-    return { path: repo, header, branches, tags, commits, changes, remotes, contributors, truncated }
+    return { path: repo, header, branches, tags, stashes, commits, changes, remotes, contributors, truncated }
   })
 }
 
@@ -837,6 +871,80 @@ function parsePullRequestJson(stdout: string): PullRequest[] {
   return requests
 }
 
+function assertStashSelector(selector: string): string {
+  if (typeof selector !== 'string' || !STASH_SELECTOR.test(selector)) throw new GitCommandError('Invalid stash')
+  return selector
+}
+
+function assertStashMessage(message: string): string {
+  if (typeof message !== 'string') throw new GitCommandError('Invalid stash message')
+  const note = message.replace(/\s+/g, ' ').trim()
+  if (note.length > 500) throw new GitCommandError('Stash message is too long')
+  return note
+}
+
+async function stashIdentityPrefix(repo: string): Promise<string[]> {
+  const [name, email] = await Promise.all([
+    runGit(repo, ['config', '--get', 'user.name'], { check: false }),
+    runGit(repo, ['config', '--get', 'user.email'], { check: false }),
+  ])
+  if (name.code === 0 && name.stdout.trim() && email.code === 0 && email.stdout.trim()) return []
+  const ident = await runGit(repo, ['log', '-1', '--format=%an%x1f%ae'], { check: false })
+  const [authorName, authorEmail] = ident.code === 0 ? ident.stdout.trim().split('\x1f') : []
+  if (!authorName || !authorEmail) {
+    throw new GitCommandError('Git needs user.name and user.email before it can stash. Set them in your Git config, then try again.')
+  }
+  return ['-c', `user.name=${authorName}`, '-c', `user.email=${authorEmail}`]
+}
+
+export function saveStash(repoPath: string, message: string, includeUntracked: boolean): Promise<Result<string>> {
+  return wrap(async () => {
+    const repo = await resolveRepo(repoPath)
+    const note = assertStashMessage(message)
+    const identity = await stashIdentityPrefix(repo)
+    const args = [...identity, 'stash', 'push']
+    if (includeUntracked) args.push('--include-untracked')
+    if (note) args.push('-m', note)
+    await runGit(repo, args, { check: true })
+    return note ? `Stashed ${note}` : 'Stashed current changes'
+  })
+}
+
+function useStash(repoPath: string, verb: 'apply' | 'pop' | 'drop', selector: string, done: (ref: string) => string): Promise<Result<string>> {
+  return wrap(async () => {
+    const repo = await resolveRepo(repoPath)
+    const ref = assertStashSelector(selector)
+    await runGit(repo, ['stash', verb, ref], { check: true })
+    return done(ref)
+  })
+}
+
+export function applyStash(repoPath: string, selector: string): Promise<Result<string>> {
+  return useStash(repoPath, 'apply', selector, (ref) => `Applied ${ref}`)
+}
+
+export function popStash(repoPath: string, selector: string): Promise<Result<string>> {
+  return useStash(repoPath, 'pop', selector, (ref) => `Restored ${ref}`)
+}
+
+export function dropStash(repoPath: string, selector: string): Promise<Result<string>> {
+  return useStash(repoPath, 'drop', selector, (ref) => `Dropped ${ref}`)
+}
+
+export function stashDiff(repoPath: string, selector: string): Promise<Result<string>> {
+  return wrap(async () => {
+    const repo = await resolveRepo(repoPath)
+    const ref = assertStashSelector(selector)
+    const shown = await runGit(repo, ['stash', 'show', '-p', '--include-untracked', ref], { check: false })
+    if (shown.code === 0) return capText(shown.stdout) || 'This stash has no file changes.'
+    if (/unknown option|unrecognized argument|usage:/i.test(`${shown.stderr}\n${shown.stdout}`)) {
+      const fallback = await runGit(repo, ['stash', 'show', '-p', ref], { check: true })
+      return capText(fallback.stdout) || 'This stash has no file changes.'
+    }
+    throw new GitCommandError(gitMessage(shown.stderr, shown.stdout))
+  })
+}
+
 export function createTag(repoPath: string, name: string, message: string): Promise<Result<string>> {
   return wrap(async () => {
     const repo = await resolveRepo(repoPath)
@@ -1009,7 +1117,15 @@ export function push(repoPath: string): Promise<Result<string>> {
   })
 }
 
-export function pull(repoPath: string): Promise<Result<string>> {
+function pullArgs(mode: PullMode): string[] {
+  if (mode === 'ff') return ['pull', '--no-rebase', '--ff', '--no-edit']
+  if (mode === 'ff-only') return ['pull', '--no-rebase', '--ff-only']
+  if (mode === 'rebase') return ['pull', '--rebase']
+  if (mode === 'default') return ['pull']
+  throw new GitCommandError('Invalid pull mode')
+}
+
+export function pull(repoPath: string, mode: PullMode = 'default'): Promise<Result<string>> {
   return wrap(async () => {
     const repo = await resolveRepo(repoPath)
     const status = await readStatus(repo)
@@ -1017,19 +1133,26 @@ export function pull(repoPath: string): Promise<Result<string>> {
     if (!status.header.upstream || status.header.gone) {
       throw new GitCommandError('This branch has no upstream to pull from')
     }
-    const result = await runGit(repo, ['pull'], { check: true, timeoutMs: 120_000 })
+    const result = await runGit(repo, pullArgs(mode), { check: true, timeoutMs: 120_000 })
     return outputText(result)
   })
 }
 
+async function fetchRemotes(repoPath: string, all: boolean): Promise<string> {
+  const repo = await resolveRepo(repoPath)
+  const remotes = await listRemotes(repo)
+  if (remotes.length === 0) throw new GitCommandError('This repository has no remotes')
+  const args = all ? ['fetch', '--all', '--prune'] : ['fetch', '--prune']
+  const result = await runGit(repo, args, { check: true, timeoutMs: 120_000 })
+  return outputText(result) || (all ? 'Fetched all remotes' : 'Fetched')
+}
+
 export function fetchRemote(repoPath: string): Promise<Result<string>> {
-  return wrap(async () => {
-    const repo = await resolveRepo(repoPath)
-    const remotes = await listRemotes(repo)
-    if (remotes.length === 0) throw new GitCommandError('This repository has no remotes')
-    const result = await runGit(repo, ['fetch', '--prune'], { check: true, timeoutMs: 120_000 })
-    return outputText(result) || 'Fetched'
-  })
+  return wrap(() => fetchRemotes(repoPath, false))
+}
+
+export function fetchAll(repoPath: string): Promise<Result<string>> {
+  return wrap(() => fetchRemotes(repoPath, true))
 }
 
 export function initRepo(repoPath: string): Promise<Result<string>> {
