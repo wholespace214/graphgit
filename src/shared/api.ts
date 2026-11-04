@@ -1,4 +1,4 @@
-import type { Contributor, FileChange, PullMode, PullRequestList, RemoteTagList, RepoSnapshot, Result } from './types'
+import type { Contributor, FileChange, PullMode, PullRequestList, RemoteTagList, RepoSnapshot, Result, UpdateState } from './types'
 
 export type CommitFiles = {
   files: FileChange[]
@@ -46,4 +46,8 @@ export type GraphGitApi = {
   closeWindow: () => Promise<void>
   isMaximized: () => Promise<boolean>
   onMaximized: (cb: (maximized: boolean) => void) => () => void
+  updateState: () => Promise<UpdateState>
+  checkForUpdates: () => Promise<UpdateState>
+  installUpdate: () => Promise<void>
+  onUpdateState: (cb: (state: UpdateState) => void) => () => void
 }

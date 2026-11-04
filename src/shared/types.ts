@@ -111,3 +111,14 @@ export type PullRequestList = {
 }
 
 export type PullMode = 'default' | 'ff' | 'ff-only' | 'rebase'
+
+export type UpdatePhase = 'disabled' | 'idle' | 'checking' | 'downloading' | 'ready' | 'current' | 'error'
+
+export type UpdateState = {
+  revision: number
+  phase: UpdatePhase
+  currentVersion: string
+  availableVersion: string | null
+  percent: number | null
+  detail: string | null
+}

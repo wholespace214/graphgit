@@ -7,6 +7,10 @@ npmRebuild: false
 directories:
   output: release
   buildResources: resources
+publish:
+  provider: github
+  owner: wholespace214
+  repo: graphgit
 files:
   - out/**/*
   - package.json

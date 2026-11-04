@@ -13,6 +13,7 @@ import { StashModal } from './components/StashModal'
 import { RepoSide, type SideTab } from './components/RepoSide'
 import { TagModal } from './components/TagModal'
 import { Toolbar } from './components/Toolbar'
+import { UpdateBanner } from './components/UpdateBanner'
 import { WidthHandle } from './components/WidthHandle'
 import { baseName, formatWhen } from './format'
 import {
@@ -1154,6 +1155,7 @@ export function App() {
           }}
         />
       )}
+      <UpdateBanner />
       {cloneOpen && (
         <CloneModal
           url={cloneUrl}

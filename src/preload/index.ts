@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type { GraphGitApi } from '../shared/api'
+import type { UpdateState } from '../shared/types'
 
 const api: GraphGitApi = {
   pickRepo: (defaultPath) => ipcRenderer.invoke('repo:pick', defaultPath),
@@ -54,6 +55,14 @@ const api: GraphGitApi = {
     const listener = (_event: IpcRendererEvent, maximized: boolean) => cb(Boolean(maximized))
     ipcRenderer.on('window:maximized', listener)
     return () => ipcRenderer.removeListener('window:maximized', listener)
+  },
+  updateState: () => ipcRenderer.invoke('update:state'),
+  checkForUpdates: () => ipcRenderer.invoke('update:check'),
+  installUpdate: () => ipcRenderer.invoke('update:install'),
+  onUpdateState: (cb) => {
+    const listener = (_event: IpcRendererEvent, next: UpdateState) => cb(next)
+    ipcRenderer.on('update:changed', listener)
+    return () => ipcRenderer.removeListener('update:changed', listener)
   },
 }
 

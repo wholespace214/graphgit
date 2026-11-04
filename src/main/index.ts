@@ -36,6 +36,7 @@ import {
   unstageAll,
   workingDiff,
 } from './git'
+import { checkForUpdates, currentUpdateState, installDownloadedUpdate, setupAutoUpdate } from './update'
 import { watchRepo } from './watch'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -183,6 +184,11 @@ function registerIpc() {
     BrowserWindow.fromWebContents(event.sender)?.close()
   })
   ipcMain.handle('window:is-maximized', (event) => Boolean(BrowserWindow.fromWebContents(event.sender)?.isMaximized()))
+  ipcMain.handle('update:state', () => currentUpdateState())
+  ipcMain.handle('update:check', () => checkForUpdates())
+  ipcMain.handle('update:install', () => {
+    installDownloadedUpdate()
+  })
   ipcMain.handle('repo:pick', async (event, defaultPath: unknown) => {
     const parent = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const options = {
@@ -263,6 +269,7 @@ if (!gotLock) {
     app.setAppUserModelId('com.graphgit.app')
     Menu.setApplicationMenu(null)
     createWindow()
+    setupAutoUpdate()
   })
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()

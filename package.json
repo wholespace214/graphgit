@@ -25,6 +25,7 @@
     "smoke": "tsx scripts/git-smoke.ts"
   },
   "dependencies": {
+    "electron-updater": "^6.8.11",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
