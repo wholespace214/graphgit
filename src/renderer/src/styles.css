@@ -287,7 +287,18 @@ button:disabled { cursor: default; }
   background: var(--bg);
 }
 .init-card span { color: var(--muted); font-size: 11px; word-break: break-all; }
-.projects-main { overflow: auto; padding: 20px 24px 32px; }
+.projects-main { overflow: auto; padding: 0; }
+.projects-local { padding: 8px 24px 32px; }
+.github-repos-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 16px 24px 12px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+.github-selected { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.github-selected strong { font-size: 22px; letter-spacing: -0.03em; }
 .projects-main h2 {
   margin: 18px 0 8px;
   color: var(--muted);
@@ -516,9 +527,20 @@ button:disabled { cursor: default; }
 .file-row.on, .change.on { background: var(--row-on); }
 .file-row:hover, .change:hover { background: var(--row); }
 .file-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.change .file-path { flex: 1; }
+.change-actions { margin-left: auto; display: flex; flex: none; gap: 2px; }
+.op-banner { margin: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; gap: 8px; }
+.op-banner p { margin: 0; }
+.op-actions { display: flex; gap: 8px; }
+.history-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.amend-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: var(--text); font-size: 13px; }
+.amend-row input { width: auto; }
 .diff-wrap { flex: 1; }
 .diff { font-size: 12px; line-height: 1.45; }
 .diff div { white-space: pre; padding: 0 12px; min-height: 1.35em; }
+.diff-hunk { display: flex; align-items: center; gap: 8px; }
+.diff-text { flex: 1; min-width: 0; }
+.hunk-button { flex: none; }
 .diff-add { background: var(--diff-add-bg); color: var(--diff-add-text); }
 .diff-del { background: var(--diff-del-bg); color: var(--diff-del-text); }
 .diff-hunk { background: var(--diff-hunk-bg); color: var(--diff-hunk-text); }
@@ -822,6 +844,42 @@ input:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--foc
 }
 .theme-file { display: none; }
 .settings-body h2.update-heading { margin-top: 28px; }
+.github-account {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 640px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-raised);
+}
+.github-account strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-switch { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+.account-chip {
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.account-chip.on { border-color: var(--accent); color: var(--text); }
+.github-repos-empty { margin: 0; padding: 16px 24px; }
+.github-repos-body { padding: 12px 24px 4px; }
+.github-repo-note { margin: 0 0 10px; }
+.github-repo-clone { flex: none; }
+.github-form { display: flex; flex-direction: column; gap: 8px; max-width: 420px; margin-top: 8px; }
+.github-form label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 12px; }
+.github-form input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--text);
+}
 .update-banner {
   position: fixed;
   right: 16px;

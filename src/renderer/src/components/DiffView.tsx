@@ -19,16 +19,37 @@ function diffClass(line: string): string {
   return 'diff-ctx'
 }
 
-export function DiffView({ text }: { text: string }) {
+export function DiffView({
+  text,
+  hunkLabel,
+  busy,
+  onHunk,
+}: {
+  text: string
+  hunkLabel?: string
+  busy?: boolean
+  onHunk?: (index: number) => void
+}) {
   if (!text) return <div className="muted pad">No diff.</div>
   const lines = text.split(/\r?\n/)
+  let hunk = -1
   return (
     <div className="diff">
-      {lines.map((line, index) => (
-        <div key={`${index}-${line.slice(0, 12)}`} className={diffClass(line)}>
-          {line || ' '}
-        </div>
-      ))}
+      {lines.map((line, index) => {
+        const isHunk = line.startsWith('@@ ')
+        if (isHunk) hunk += 1
+        const current = hunk
+        return (
+          <div key={`${index}-${line.slice(0, 12)}`} className={diffClass(line)}>
+            <span className="diff-text">{line || ' '}</span>
+            {isHunk && onHunk && (
+              <button type="button" className="text-button hunk-button" disabled={busy} onClick={() => onHunk(current)}>
+                {hunkLabel || 'Stage hunk'}
+              </button>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }

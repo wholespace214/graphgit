@@ -1,10 +1,10 @@
 import { createRequire } from 'node:module'
 import { app, BrowserWindow } from 'electron'
 import type { AppUpdater } from 'electron-updater'
+import type { UpdatePhase, UpdateState } from '../shared/types'
 import { disabledUpdateDetail, updateKind, type UpdateKind } from '../shared/update'
 
 const { autoUpdater } = createRequire(import.meta.url)('electron-updater') as { autoUpdater: AppUpdater }
-import type { UpdatePhase, UpdateState } from '../shared/types'
 
 const CHECK_DELAY_MS = 4_000
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
@@ -38,7 +38,12 @@ function ensureState(): UpdateState {
   return state
 }
 
-function publish(patch: { phase: UpdatePhase; availableVersion?: string | null; percent?: number | null; detail?: string | null }) {
+function publish(patch: {
+  phase: UpdatePhase
+  availableVersion?: string | null
+  percent?: number | null
+  detail?: string | null
+}) {
   const current = ensureState()
   state = {
     revision: current.revision + 1,
@@ -96,7 +101,7 @@ function wireUpdater() {
     publish({ phase: 'ready', availableVersion: info.version, percent: 100, detail: readyDetail() })
   })
   autoUpdater.on('update-cancelled', () => {
-    publish({ phase: 'idle', percent: null, detail: null })
+    publish({ phase: 'idle', availableVersion: null, percent: null, detail: null })
   })
   autoUpdater.on('error', (error) => {
     if (ensureState().phase === 'ready') return

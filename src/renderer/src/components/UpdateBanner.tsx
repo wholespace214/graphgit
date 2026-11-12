@@ -41,11 +41,14 @@ export function UpdateBanner() {
     )
   }
 
-  if (state.phase === 'error' && version && state.detail) {
+  if (state.phase === 'error' && state.detail) {
     return (
       <div className="update-banner" role="status">
         <p>{state.detail}</p>
         <div className="update-actions">
+          <button type="button" className="ghost" onClick={() => void window.graphgit.checkForUpdates()}>
+            Try again
+          </button>
           <button type="button" className="ghost" onClick={() => setHiddenRevision(state.revision)}>
             Dismiss
           </button>

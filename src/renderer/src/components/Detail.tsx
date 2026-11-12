@@ -1,4 +1,4 @@
-import type { Commit, FileChange } from '@shared/types'
+import type { Commit, FileChange, ResetMode } from '@shared/types'
 import { useRef } from 'react'
 import { formatWhen, shortHash } from '../format'
 import { FILES_MAX, FILES_MIN, clamp } from '../layout'
@@ -23,6 +23,13 @@ export function Detail({
   onCopy,
   filesHeight,
   onFilesHeight,
+  busy,
+  historyLocked,
+  hunkLabel,
+  onHunk,
+  onCherryPick,
+  onRevert,
+  onReset,
 }: {
   panel: 'commit' | 'work' | 'stash'
   loading: boolean
@@ -40,6 +47,13 @@ export function Detail({
   onCopy: (text: string) => void
   filesHeight: number
   onFilesHeight: (height: number) => void
+  busy: boolean
+  historyLocked: boolean
+  hunkLabel?: string
+  onHunk?: (index: number) => void
+  onCherryPick: (hash: string) => void
+  onRevert: (hash: string) => void
+  onReset: (hash: string, mode: ResetMode) => void
 }) {
   const partners = coAuthorNames(body)
   const note = commitBody(body)
@@ -74,7 +88,11 @@ export function Detail({
             <span className="muted">{workStaged ? 'Staged change' : 'Unstaged change'}</span>
           </div>
           <div className="diff-wrap">
-            {loading ? <p className="muted pad">Loading diff…</p> : <DiffView text={error ?? diff} />}
+            {loading ? (
+              <p className="muted pad">Loading diff…</p>
+            ) : (
+              <DiffView text={error ?? diff} hunkLabel={hunkLabel} busy={busy} onHunk={error ? undefined : onHunk} />
+            )}
           </div>
         </>
       ) : commit ? (
@@ -92,6 +110,23 @@ export function Detail({
               <p className="parents">Merge of {commit.parents.map((parent) => shortHash(parent)).join(' + ')}</p>
             )}
             {note && <pre className="commit-body">{note}</pre>}
+            <div className="history-actions">
+              <button type="button" className="text-button" disabled={busy || historyLocked} onClick={() => onCherryPick(commit.hash)}>
+                Cherry-pick
+              </button>
+              <button type="button" className="text-button" disabled={busy || historyLocked} onClick={() => onRevert(commit.hash)}>
+                Revert
+              </button>
+              <button type="button" className="text-button" disabled={busy || historyLocked} onClick={() => onReset(commit.hash, 'soft')}>
+                Reset soft
+              </button>
+              <button type="button" className="text-button" disabled={busy || historyLocked} onClick={() => onReset(commit.hash, 'mixed')}>
+                Reset mixed
+              </button>
+              <button type="button" className="text-button" disabled={busy || historyLocked} onClick={() => onReset(commit.hash, 'hard')}>
+                Reset hard
+              </button>
+            </div>
           </div>
           <div className="file-list" style={{ height: filesHeight }}>
             {files.length === 0 && !loading && <p className="muted pad">No file changes.</p>}

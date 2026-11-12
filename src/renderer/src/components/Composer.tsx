@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Change, Contributor } from '@shared/types'
+import type { Change, ConflictSide, Contributor, RepoOperation } from '@shared/types'
 import { CHANGES_MIN, MESSAGE_MIN, clamp } from '../layout'
 import { StatusBadge } from './StatusBadge'
 import { WidthHandle } from './WidthHandle'
@@ -23,6 +23,14 @@ export function Composer({
   onUnstageAll,
   onStash,
   onSelectChange,
+  operation,
+  amend,
+  canAmend,
+  onAmend,
+  onDiscard,
+  onTakeSide,
+  onContinue,
+  onAbort,
 }: {
   changes: Change[]
   changesWidth: number | null
@@ -42,6 +50,14 @@ export function Composer({
   onUnstageAll: () => void
   onStash: () => void
   onSelectChange: (change: Change, staged: boolean) => void
+  operation: RepoOperation | null
+  amend: boolean
+  canAmend: boolean
+  onAmend: (value: boolean) => void
+  onDiscard: (path: string) => void
+  onTakeSide: (path: string, side: ConflictSide) => void
+  onContinue: () => void
+  onAbort: () => void
 }) {
   const staged = changes.filter((change) => change.staged)
   const unstaged = changes.filter((change) => change.unstaged || change.untracked)
@@ -69,16 +85,22 @@ export function Composer({
   const draftEmail = personEmail.trim()
   const emailOk = draftEmail.length > 0 && draftEmail.length <= 200 && !/[\s<>]/.test(draftEmail) && draftEmail.includes('@')
   const canAdd = draftName.length > 0 && draftName.length <= 100 && emailOk && !withUsers.some((person) => person.email.toLowerCase() === draftEmail.toLowerCase())
-  const canCommit = count > 0 && message.trim().length > 0 && !busy && !conflicts
+  const amending = amend && canAmend
+  const canCommit = message.trim().length > 0 && !busy && !conflicts && (amending || count > 0)
   const commitTitle = conflicts
     ? 'Resolve conflicts first'
-    : count === 0
-      ? 'Nothing to commit'
-      : message.trim().length === 0
+    : amending
+      ? message.trim().length === 0
         ? 'Enter a commit message'
-        : staged.length > 0
-          ? 'Commit staged files'
-          : 'Commit all changes'
+        : 'Amend the latest commit'
+      : count === 0
+        ? 'Nothing to commit'
+        : message.trim().length === 0
+          ? 'Enter a commit message'
+          : staged.length > 0
+            ? 'Commit staged files'
+            : 'Commit all changes'
+  const operationName = operation === 'cherry-pick' ? 'Cherry-pick' : operation === 'rebase' ? 'Rebase' : operation === 'revert' ? 'Revert' : 'Merge'
 
   function peopleForCommit(): Contributor[] | null {
     if (!draftName && !draftEmail) return withUsers
@@ -121,6 +143,22 @@ export function Composer({
           </span>
         </div>
         <div className="changes-scroll">
+          {operation && (
+            <div className="op-banner">
+              <p>
+                {operationName} in progress.
+                {operation === 'rebase' ? ' During a rebase, Ours is the branch you are rebasing onto.' : ''}
+              </p>
+              <div className="op-actions">
+                <button type="button" className="primary" disabled={busy || conflicts} onClick={onContinue}>
+                  Continue
+                </button>
+                <button type="button" className="ghost" disabled={busy} onClick={onAbort}>
+                  Abort
+                </button>
+              </div>
+            </div>
+          )}
           {conflicts && <p className="form-error pad">Resolve conflicts before committing.</p>}
           {changes.length === 0 && <p className="muted pad">Working tree clean.</p>}
           {staged.length > 0 && (
@@ -140,6 +178,7 @@ export function Composer({
                   busy={busy}
                   actionLabel="Unstage"
                   onAction={() => onUnstage(change.path)}
+                  onDiscard={() => onDiscard(change.path)}
                   onSelect={onSelectChange}
                 />
               ))}
@@ -160,8 +199,10 @@ export function Composer({
                   staged={false}
                   selected={selected}
                   busy={busy}
-                  actionLabel="Stage"
+                  actionLabel={change.conflict ? 'Resolved' : 'Stage'}
                   onAction={() => onStage(change.path)}
+                  onDiscard={() => onDiscard(change.path)}
+                  onTakeSide={change.conflict ? (side) => onTakeSide(change.path, side) : undefined}
                   onSelect={onSelectChange}
                 />
               ))}
@@ -262,10 +303,14 @@ export function Composer({
             ))}
           </div>
         )}
+        <label className="amend-row">
+          <input type="checkbox" checked={amend && canAmend} disabled={busy || !canAmend} onChange={(event) => onAmend(event.target.checked)} />
+          Amend latest commit
+        </label>
         <div className="message-actions">
           <span className="muted">Ctrl+Enter to commit</span>
           <button className="primary" onClick={commitNow} disabled={!canCommit} title={commitTitle}>
-            {count > 0 ? `Commit ${count} file${count === 1 ? '' : 's'}` : 'Commit'}
+            {amending ? 'Amend' : count > 0 ? `Commit ${count} file${count === 1 ? '' : 's'}` : 'Commit'}
           </button>
         </div>
       </div>
@@ -280,6 +325,8 @@ function ChangeRow({
   busy,
   actionLabel,
   onAction,
+  onDiscard,
+  onTakeSide,
   onSelect,
 }: {
   change: Change
@@ -288,6 +335,8 @@ function ChangeRow({
   busy: boolean
   actionLabel: string
   onAction: () => void
+  onDiscard: () => void
+  onTakeSide?: (side: ConflictSide) => void
   onSelect: (change: Change, staged: boolean) => void
 }) {
   const on = selected?.path === change.path && selected.staged === staged
@@ -310,17 +359,58 @@ function ChangeRow({
       <span className="file-path" title={label}>
         {label}
       </span>
-      <button
-        type="button"
-        className="text-button"
-        disabled={busy}
-        onClick={(event) => {
-          event.stopPropagation()
-          onAction()
-        }}
-      >
-        {actionLabel}
-      </button>
+      <span className="change-actions">
+        {onTakeSide && (
+          <>
+            <button
+              type="button"
+              className="text-button"
+              disabled={busy}
+              title="Keep the current branch version"
+              onClick={(event) => {
+                event.stopPropagation()
+                onTakeSide('ours')
+              }}
+            >
+              Ours
+            </button>
+            <button
+              type="button"
+              className="text-button"
+              disabled={busy}
+              title="Keep the incoming version"
+              onClick={(event) => {
+                event.stopPropagation()
+                onTakeSide('theirs')
+              }}
+            >
+              Theirs
+            </button>
+          </>
+        )}
+        <button
+          type="button"
+          className="text-button"
+          disabled={busy}
+          onClick={(event) => {
+            event.stopPropagation()
+            onDiscard()
+          }}
+        >
+          Discard
+        </button>
+        <button
+          type="button"
+          className="text-button"
+          disabled={busy}
+          onClick={(event) => {
+            event.stopPropagation()
+            onAction()
+          }}
+        >
+          {actionLabel}
+        </button>
+      </span>
     </div>
   )
 }

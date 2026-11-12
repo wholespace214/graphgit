@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { updateStatus, useUpdateState } from '../useUpdate'
 import { BackButton } from './BackButton'
+import { GitHubSettings } from './GitHubSettings'
 import { SettingsButton } from './SettingsButton'
 import { WindowControls } from './WindowControls'
 import { Logo } from './Logo'
@@ -85,6 +86,8 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
             Check for updates
           </button>
         </div>
+        <h2 className="update-heading">GitHub</h2>
+        <GitHubSettings />
         <h2 className="update-heading">Appearance</h2>
         <p>Choose how GraphGit looks. The choice stays on this computer.</p>
         <div className="theme-grid">

@@ -3,7 +3,8 @@ import { existsSync, statSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { cloneUrlError, folderNameError } from '../shared/clone'
-import type { BranchHeader, BranchInfo, Change, Commit, Contributor, FileChange, PullMode, PullRequest, RefChip, RemoteTag, RemoteTagList, RepoSnapshot, Result, StashEntry, TagInfo } from '../shared/types'
+import type { BranchHeader, BranchInfo, Change, Commit, ConflictSide, Contributor, FileChange, PullMode, PullRequest, PushMode, RefChip, RemoteTag, RemoteTagList, RepoOperation, RepoSnapshot, ResetMode, Result, StashEntry, TagInfo } from '../shared/types'
+import { accountForOwner, accountForRepo, assertGitHubSlug, defaultGitHubUsername, GitHubError, githubNetworkEnv, githubPageUrl, githubSessionJson, gitHubSignedIn, hasGitHubAccount, redactSecrets, rememberRepoAccount } from './githubSession'
 
 const LOG_LIMIT = 500
 const OUTPUT_CAP = 500_000
@@ -28,14 +29,14 @@ function wrap<T>(fn: () => Promise<T>): Promise<Result<T>> {
       if (error instanceof GitCommandError) {
         return { ok: false, error: error.message, code: error.code, path: error.path }
       }
-      const message = error instanceof Error ? error.message : String(error)
+      const message = redactSecrets(error instanceof Error ? error.message : String(error))
       return { ok: false, error: message }
     },
   )
 }
 
 function gitMessage(stderr: string, stdout: string): string {
-  const text = (stderr || stdout || 'Git command failed').trim()
+  const text = redactSecrets((stderr || stdout || 'Git command failed').trim())
   const hint = /please tell me who you are|author identity unknown/i.test(text)
     ? '\n\nGit needs user.name and user.email before it can commit. Set them in your Git config, then try again.'
     : ''
@@ -48,13 +49,15 @@ function capText(text: string): string {
 }
 
 function outputText(result: { stdout: string; stderr: string }): string {
-  return [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n') || 'Done'
+  return redactSecrets([result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n') || 'Done')
 }
 
 type RunOptions = {
   stdin?: string
   check?: boolean
   timeoutMs?: number
+  editor?: string
+  github?: boolean | string
 }
 
 function runGit(
@@ -86,8 +89,10 @@ function runGit(
         env: {
           ...process.env,
           GIT_TERMINAL_PROMPT: '0',
-          GIT_EDITOR: 'true',
-          EDITOR: 'true',
+          GIT_EDITOR: options?.editor ?? 'true',
+          EDITOR: options?.editor ?? 'true',
+          ...(options?.editor ? { GIT_SEQUENCE_EDITOR: options.editor } : {}),
+          ...(options?.github ? githubNetworkEnv(githubAccountForCommand(repo, options.github, args)) : {}),
         },
       },
     )
@@ -122,7 +127,7 @@ function runGit(
     child.on('error', (error: NodeJS.ErrnoException) => {
       finish(() => {
         const missing = error.code === 'ENOENT'
-        reject(new GitCommandError(missing ? 'Git is not installed or not on your PATH.' : error.message))
+        reject(new GitCommandError(missing ? 'Git is not installed or not on your PATH.' : redactSecrets(error.message)))
       })
     })
 
@@ -132,8 +137,8 @@ function runGit(
           reject(new GitCommandError('Git took too long and was stopped.'))
           return
         }
-        let stdout = Buffer.concat(out).toString('utf8')
-        const stderr = Buffer.concat(err).toString('utf8')
+        let stdout = redactSecrets(Buffer.concat(out).toString('utf8'))
+        const stderr = redactSecrets(Buffer.concat(err).toString('utf8'))
         if (truncated && outSize > OUTPUT_CAP) stdout += '\n\n… Output truncated …'
         const finalCode = code ?? 1
         if (options?.check && finalCode !== 0) {
@@ -564,10 +569,19 @@ async function untrackedPreview(repo: string, file: string): Promise<string> {
   if (info.size > 200_000) return `New file (${info.size} bytes) is too large to preview.`
   const buffer = await readFile(abs)
   if (buffer.subarray(0, 8000).includes(0)) return 'Binary file.'
-  const content = buffer.toString('utf8')
-  const lines = content.split(/\r?\n/)
+  return newFileDiff(file, buffer.toString('utf8'))
+}
+
+function newFileDiff(file: string, content: string): string {
+  const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  const header = `diff --git a/${file} b/${file}\nnew file mode 100644\n--- /dev/null\n+++ b/${file}\n`
+  if (normalized.length === 0) return header
+  const missingNewline = !normalized.endsWith('\n')
+  const text = missingNewline ? normalized : normalized.slice(0, -1)
+  const lines = text.split('\n')
   const body = lines.map((line) => `+${line}`).join('\n')
-  return `diff --git a/${file} b/${file}\nnew file mode 100644\n--- /dev/null\n+++ b/${file}\n@@ -0,0 +1,${lines.length} @@\n${body}`
+  const marker = missingNewline ? '\n\\ No newline at end of file' : ''
+  return `${header}@@ -0,0 +1,${lines.length} @@\n${body}${marker}\n`
 }
 
 export function loadRepo(repoPath: string): Promise<Result<RepoSnapshot>> {
@@ -633,7 +647,8 @@ export function loadRepo(repoPath: string): Promise<Result<RepoSnapshot>> {
     const tags = parseTags(tagResult.stdout)
     const stashes = parseStashes(stashResult.stdout)
     const contributors = peopleResult.code === 0 ? parseContributors(peopleResult.stdout, emailResult.code === 0 ? emailResult.stdout : '') : []
-    return { path: repo, header, branches, tags, stashes, commits, changes, remotes, contributors, truncated }
+    const operation = await readOperation(repo)
+    return { path: repo, header, branches, tags, stashes, commits, changes, remotes, contributors, operation, truncated }
   })
 }
 
@@ -714,7 +729,7 @@ export function unstageAll(repoPath: string): Promise<Result<string>> {
   })
 }
 
-export function commit(repoPath: string, message: string, withUsers?: unknown): Promise<Result<string>> {
+export function commit(repoPath: string, message: string, withUsers?: unknown, amend = false): Promise<Result<string>> {
   return wrap(async () => {
     const repo = await resolveRepo(repoPath)
     if (typeof message !== 'string' || message.trim().length === 0) throw new GitCommandError('Commit message is empty')
@@ -723,6 +738,16 @@ export function commit(repoPath: string, message: string, withUsers?: unknown): 
     const status = await readStatus(repo)
     if (status.changes.some((change) => change.conflict)) {
       throw new GitCommandError('Resolve conflicts before committing')
+    }
+    if (amend) {
+      if (status.header.empty) throw new GitCommandError('There is no commit to amend')
+      if (await readOperation(repo)) throw new GitCommandError('Finish the current operation before amending')
+      const identity = await commitIdentityPrefix(repo, 'amend')
+      await runGit(repo, [...identity, 'commit', '--amend', '-F', '-'], {
+        stdin: formatCommitMessage(message, people),
+        check: true,
+      })
+      return 'Commit amended'
     }
     const staged = status.changes.some((change) => change.staged)
     const pending = status.changes.some((change) => change.unstaged || change.untracked)
@@ -829,14 +854,15 @@ function runGh(repo: string, args: string[]): Promise<{ code: number; stdout: st
   })
 }
 
-async function githubSlug(repo: string): Promise<string | null> {
+async function githubRemote(repo: string): Promise<{ remote: string; slug: string } | null> {
   const remotes = await listRemotes(repo)
   const ordered = remotes.includes('origin') ? ['origin', ...remotes.filter((name) => name !== 'origin')] : remotes
-  for (const name of ordered) {
-    const url = await runGit(repo, ['remote', 'get-url', name], { check: false })
+  for (const remote of ordered) {
+    if (remote.startsWith('-')) continue
+    const url = await runGit(repo, ['remote', 'get-url', remote], { check: false })
     if (url.code !== 0) continue
     const slug = githubSlugFromUrl(url.stdout.trim())
-    if (slug) return slug
+    if (slug) return { remote, slug }
   }
   return null
 }
@@ -985,7 +1011,7 @@ export function checkoutTag(repoPath: string, name: string): Promise<Result<stri
       const remotes = await listRemotes(repo)
       const remote = remotes.includes('origin') ? 'origin' : remotes[0]
       if (!remote) throw new GitCommandError(`Tag ${name} was not found`)
-      await runGit(repo, ['fetch', remote, 'tag', name], { check: true, timeoutMs: 120_000 })
+      await runGit(repo, ['fetch', remote, 'tag', name], { check: true, github: true, timeoutMs: 120_000 })
     }
     await runGit(repo, ['switch', '--detach', '--', name], { check: true })
     return `Checked out tag ${name}`
@@ -998,7 +1024,7 @@ export function listRemoteTags(repoPath: string): Promise<Result<RemoteTagList>>
     const remotes = await listRemotes(repo)
     const remote = remotes.includes('origin') ? 'origin' : remotes[0]
     if (!remote) return { remote: null, tags: [], detail: null }
-    const result = await runGit(repo, ['ls-remote', '--tags', remote], { check: false, timeoutMs: 20_000 })
+    const result = await runGit(repo, ['ls-remote', '--tags', remote], { check: false, github: true, timeoutMs: 20_000 })
     if (result.code !== 0) {
       const text = (result.stderr || result.stdout || 'Could not read remote tags').trim()
       return { remote, tags: [], detail: text.slice(0, 500) }
@@ -1015,22 +1041,60 @@ export function pushTag(repoPath: string, name: string): Promise<Result<string>>
     if (remotes.length === 0) throw new GitCommandError('This repository has no remotes')
     const remote = remotes.includes('origin') ? 'origin' : remotes[0]
     if (!remote) throw new GitCommandError('This repository has no remotes')
-    const result = await runGit(repo, ['push', remote, `refs/tags/${name}`], { check: true, timeoutMs: 120_000 })
+    const result = await runGit(repo, ['push', remote, `refs/tags/${name}`], { check: true, github: true, timeoutMs: 120_000 })
     return outputText(result)
   })
+}
+
+type ApiPull = {
+  number?: unknown
+  title?: unknown
+  html_url?: unknown
+  head?: { ref?: unknown }
+  base?: { ref?: unknown }
+  user?: { login?: unknown }
+}
+
+function mapApiPull(row: ApiPull): PullRequest | null {
+  if (!row || typeof row !== 'object') return null
+  if (typeof row.number !== 'number' || !Number.isInteger(row.number) || row.number < 1 || row.number > 1_000_000) return null
+  if (typeof row.title !== 'string' || !row.title.trim()) return null
+  return {
+    number: row.number,
+    title: row.title.trim().slice(0, 300),
+    url: githubPageUrl(row.html_url) ?? '',
+    head: typeof row.head?.ref === 'string' ? row.head.ref : '',
+    base: typeof row.base?.ref === 'string' ? row.base.ref : '',
+    author: typeof row.user?.login === 'string' ? row.user.login : '',
+  }
 }
 
 export function listPullRequests(repoPath: string): Promise<Result<{ requests: PullRequest[]; detail: string | null }>> {
   return wrap(async () => {
     const repo = await resolveRepo(repoPath)
-    const slug = await githubSlug(repo)
-    if (!slug) return { requests: [], detail: 'Pull requests need a GitHub remote.' }
+    const github = await githubRemote(repo)
+    if (!github) return { requests: [], detail: 'Pull requests need a GitHub remote.' }
+    if (gitHubSignedIn()) {
+      try {
+        const actor = githubActor(repo, github.slug)
+        const rows = await githubSessionJson<ApiPull[]>(`/repos/${assertGitHubSlug(github.slug)}/pulls?state=open&per_page=50`, actor)
+        if (!Array.isArray(rows)) return { requests: [], detail: 'GitHub returned an unreadable response.' }
+        const requests = rows.flatMap((row) => {
+          const request = mapApiPull(row)
+          return request ? [request] : []
+        })
+        return { requests, detail: null }
+      } catch (error) {
+        if (error instanceof GitHubError) return { requests: [], detail: error.message.slice(0, 500) }
+        throw error
+      }
+    }
     try {
       const result = await runGh(repo, [
         'pr',
         'list',
         '--repo',
-        slug,
+        github.slug,
         '--state',
         'open',
         '--limit',
@@ -1045,7 +1109,7 @@ export function listPullRequests(repoPath: string): Promise<Result<{ requests: P
       return { requests: parsePullRequestJson(result.stdout), detail: null }
     } catch (error) {
       if (error instanceof GitCommandError && /not installed/i.test(error.message)) {
-        return { requests: [], detail: 'Install the GitHub CLI (gh) and sign in to see pull requests.' }
+        return { requests: [], detail: 'Sign in to GitHub in Settings, or install the GitHub CLI (gh).' }
       }
       throw error
     }
@@ -1056,9 +1120,21 @@ export function checkoutPullRequest(repoPath: string, number: number): Promise<R
   return wrap(async () => {
     if (!Number.isInteger(number) || number < 1 || number > 1_000_000) throw new GitCommandError('Invalid pull request')
     const repo = await resolveRepo(repoPath)
-    const slug = await githubSlug(repo)
-    if (!slug) throw new GitCommandError('Pull requests need a GitHub remote')
-    const result = await runGh(repo, ['pr', 'checkout', String(number), '--repo', slug])
+    const github = await githubRemote(repo)
+    if (!github) throw new GitCommandError('Pull requests need a GitHub remote')
+    if (gitHubSignedIn()) {
+      const actor = githubActor(repo, github.slug)
+      await githubSessionJson(`/repos/${assertGitHubSlug(github.slug)}/pulls/${number}`, actor)
+      const branch = `pr-${number}`
+      await runGit(repo, ['fetch', github.remote, `pull/${number}/head:refs/heads/${branch}`], {
+        check: true,
+        github: actor ?? true,
+        timeoutMs: 120_000,
+      })
+      await runGit(repo, ['switch', '--', branch], { check: true })
+      return `Checked out pull request #${number}`
+    }
+    const result = await runGh(repo, ['pr', 'checkout', String(number), '--repo', github.slug])
     if (result.code !== 0) throw new GitCommandError(gitMessage(result.stderr, result.stdout))
     return `Checked out pull request #${number}`
   })
@@ -1072,15 +1148,23 @@ export function createPullRequest(repoPath: string, title: string, base: string)
     assertNewBranchName(base)
     const status = await readStatus(repo)
     if (status.header.detached || status.header.empty) throw new GitCommandError('Checkout a branch before opening a pull request')
-    const slug = await githubSlug(repo)
-    if (!slug) throw new GitCommandError('Pull requests need a GitHub remote')
-    const result = await runGh(repo, ['pr', 'create', '--repo', slug, '--base', base, '--head', status.header.name, '--title', text, '--body', ''])
+    const github = await githubRemote(repo)
+    if (!github) throw new GitCommandError('Pull requests need a GitHub remote')
+    if (gitHubSignedIn()) {
+      const actor = githubActor(repo, github.slug)
+      const created = await githubSessionJson<{ html_url?: unknown }>(`/repos/${assertGitHubSlug(github.slug)}/pulls`, actor, {
+        method: 'POST',
+        body: JSON.stringify({ title: text, head: status.header.name, base, body: '' }),
+      })
+      return githubPageUrl(created.html_url) ?? `Opened pull request from ${status.header.name}`
+    }
+    const result = await runGh(repo, ['pr', 'create', '--repo', github.slug, '--base', base, '--head', status.header.name, '--title', text, '--body', ''])
     if (result.code !== 0) throw new GitCommandError(gitMessage(result.stderr, result.stdout))
     return outputText(result) || `Opened pull request from ${status.header.name}`
   })
 }
 
-export function cloneRepo(url: string, parentDir: string, folderName: string): Promise<Result<string>> {
+export function cloneRepo(url: string, parentDir: string, folderName: string, account?: string): Promise<Result<string>> {
   return wrap(async () => {
     const source = url.trim()
     const folder = folderName.trim()
@@ -1088,32 +1172,228 @@ export function cloneRepo(url: string, parentDir: string, folderName: string): P
     if (urlError) throw new GitCommandError(urlError)
     const nameError = folderNameError(folder)
     if (nameError) throw new GitCommandError(nameError)
+    const requested = account?.trim()
+    if (requested && !hasGitHubAccount(requested)) throw new GitCommandError('That GitHub account is not signed in.')
+    const chosen = requested || accountForOwner(githubSlugFromUrl(source)?.split('/')[0]) || defaultGitHubUsername()
     const parent = assertDirectory(parentDir)
     const dest = path.resolve(parent, folder)
     if (path.dirname(dest).toLowerCase() !== parent.toLowerCase()) throw new GitCommandError('Invalid folder name')
     if (existsSync(dest)) throw new GitCommandError('That folder already exists')
-    await runGit(parent, ['clone', '--progress', source, folder], { check: true, timeoutMs: 300_000 })
+    await runGit(parent, ['clone', '--progress', source, folder], { check: true, github: chosen ?? true, timeoutMs: 300_000 })
     if (!existsSync(path.join(dest, '.git'))) throw new GitCommandError('Clone finished, but the repository was not created')
+    if (chosen) await rememberRepoAccount(dest, chosen)
     return dest
   })
 }
 
-export function push(repoPath: string): Promise<Result<string>> {
+function githubActor(repo: string, slug: string | null): string | undefined {
+  return accountForRepo(repo) ?? accountForOwner(slug?.split('/')[0])
+}
+
+function githubAccountForCommand(repo: string, github: boolean | string, args: string[]): string | undefined {
+  if (typeof github === 'string' && github.trim()) return github.trim()
+  return githubActor(repo, args.map((arg) => githubSlugFromUrl(arg)).find((slug) => slug) ?? null)
+}
+
+const REMOTE_NAME = /^[A-Za-z0-9._/-]+$/
+
+export function push(repoPath: string, mode: PushMode = 'default', remote?: string): Promise<Result<string>> {
   return wrap(async () => {
     const repo = await resolveRepo(repoPath)
     const status = await readStatus(repo)
     if (status.header.detached) throw new GitCommandError('Cannot push a detached HEAD')
     const remotes = await listRemotes(repo)
     if (remotes.length === 0) throw new GitCommandError('This repository has no remotes')
+    if (mode !== 'default' && mode !== 'lease') throw new GitCommandError('Invalid push')
+    const flag = mode === 'lease' ? ['--force-with-lease'] : []
+    if (typeof remote === 'string' && remote.length > 0) {
+      if (!REMOTE_NAME.test(remote) || remote.startsWith('-') || remote.includes('..') || !remotes.includes(remote)) {
+        throw new GitCommandError('Unknown remote')
+      }
+      const result = await runGit(repo, ['push', ...flag, '-u', remote, 'HEAD'], { check: true, github: true, timeoutMs: 120_000 })
+      return outputText(result)
+    }
     if (status.header.upstream && !status.header.gone) {
-      const result = await runGit(repo, ['push'], { check: true, timeoutMs: 120_000 })
+      const result = await runGit(repo, ['push', ...flag], { check: true, github: true, timeoutMs: 120_000 })
       return outputText(result)
     }
     if (!remotes.includes('origin')) {
       throw new GitCommandError('No upstream is set, and there is no origin remote')
     }
-    const result = await runGit(repo, ['push', '-u', 'origin', 'HEAD'], { check: true, timeoutMs: 120_000 })
+    const result = await runGit(repo, ['push', ...flag, '-u', 'origin', 'HEAD'], { check: true, github: true, timeoutMs: 120_000 })
     return outputText(result)
+  })
+}
+
+async function readOperation(repo: string): Promise<RepoOperation | null> {
+  const gitDirResult = await runGit(repo, ['rev-parse', '--absolute-git-dir'], { check: true })
+  const dir = path.resolve(gitDirResult.stdout.trim())
+  if (existsSync(path.join(dir, 'rebase-merge')) || existsSync(path.join(dir, 'rebase-apply'))) return 'rebase'
+  if (existsSync(path.join(dir, 'MERGE_HEAD'))) return 'merge'
+  if (existsSync(path.join(dir, 'CHERRY_PICK_HEAD'))) return 'cherry-pick'
+  if (existsSync(path.join(dir, 'REVERT_HEAD'))) return 'revert'
+  return null
+}
+
+async function requireIdle(repo: string) {
+  const operation = await readOperation(repo)
+  if (operation) throw new GitCommandError(`Finish the ${operation} before starting another`)
+}
+
+function operationLabel(operation: RepoOperation): string {
+  if (operation === 'cherry-pick') return 'Cherry-pick'
+  if (operation === 'merge') return 'Merge'
+  if (operation === 'rebase') return 'Rebase'
+  return 'Revert'
+}
+
+const QUIET_EDITOR = ':'
+
+export function discard(repoPath: string, paths: string[]): Promise<Result<string>> {
+  return wrap(async () => {
+    const repo = await resolveRepo(repoPath)
+    assertPaths(paths)
+    const status = await readStatus(repo)
+    const known = new Map(status.changes.map((change) => [change.path, change]))
+    for (const file of paths) {
+      if (!known.has(file)) throw new GitCommandError('File is not changed')
+    }
+    const untracked = paths.filter((file) => known.get(file)?.untracked)
+    const tracked = paths.filter((file) => !known.get(file)?.untracked)
+    for (const file of tracked) {
+      const restored = await runGit(repo, ['restore', '--source=HEAD', '--staged', '--worktree', '--', file], { check: false })
+      if (restored.code === 0) continue
+      const change = known.get(file)
+      if (change?.index !== 'A') throw new GitCommandError(gitMessage(restored.stderr, restored.stdout))
+      await runGit(repo, ['rm', '-f', '--', file], { check: true })
+    }
+    if (untracked.length > 0) await runGit(repo, ['clean', '-f', '--', ...untracked], { check: true })
+    return `Discarded ${paths.length} file${paths.length === 1 ? '' : 's'}`
+  })
+}
+
+export function takeSide(repoPath: string, file: string, side: ConflictSide): Promise<Result<string>> {
+  return wrap(async () => {
+    const repo = await resolveRepo(repoPath)
+    assertRepoFile(file)
+    if (side !== 'ours' && side !== 'theirs') throw new GitCommandError('Invalid conflict side')
+    if (!(await readOperation(repo))) throw new GitCommandError('No merge, rebase, cherry-pick, or revert is in progress')
+    const status = await readStatus(repo)
+    const change = status.changes.find((item) => item.path === file)
+    if (!change?.conflict) throw new GitCommandError('That file is not in conflict')
+    await runGit(repo, ['checkout', `--${side}`, '--', file], { check: true })
+    await runGit(repo, ['add', '--', file], { check: true })
+    return side === 'ours' ? `Kept our version of ${file}` : `Kept their version of ${file}`
+  })
+}
+
+export function continueOperation(repoPath: string): Promise<Result<string>> {
+  return wrap(async () => {
+    const repo = await resolveRepo(repoPath)
+    const operation = await readOperation(repo)
+    if (!operation) throw new GitCommandError('Nothing to continue')
+    const status = await readStatus(repo)
+    if (status.changes.some((change) => change.conflict)) throw new GitCommandError('Resolve conflicts before continuing')
+    const identity = await commitIdentityPrefix(repo, 'continue')
+    const verb = operation === 'cherry-pick' ? 'cherry-pick' : operation
+    await runGit(repo, [...identity, verb, '--continue'], { check: true, editor: QUIET_EDITOR })
+    return `${operationLabel(operation)} continued`
+  })
+}
+
+export function abortOperation(repoPath: string): Promise<Result<string>> {
+  return wrap(async () => {
+    const repo = await resolveRepo(repoPath)
+    const operation = await readOperation(repo)
+    if (!operation) throw new GitCommandError('Nothing to abort')
+    const verb = operation === 'cherry-pick' ? 'cherry-pick' : operation
+    await runGit(repo, [verb, '--abort'], { check: true })
+    return `${operationLabel(operation)} aborted`
+  })
+}
+
+async function commitParentCount(repo: string, hash: string): Promise<number> {
+  const result = await runGit(repo, ['rev-list', '--parents', '-n', '1', hash], { check: true })
+  const parts = result.stdout.trim().split(/\s+/)
+  return Math.max(0, parts.length - 1)
+}
+
+export function cherryPick(repoPath: string, hash: string): Promise<Result<string>> {
+  return wrap(async () => {
+    const repo = await resolveRepo(repoPath)
+    assertHash(hash)
+    await requireIdle(repo)
+    const parents = await commitParentCount(repo, hash)
+    const identity = await commitIdentityPrefix(repo, 'cherry-pick')
+    const args = [...identity, 'cherry-pick']
+    if (parents > 1) args.push('-m', '1')
+    args.push(hash)
+    const result = await runGit(repo, args, { check: false, editor: QUIET_EDITOR })
+    if (result.code !== 0) throw new GitCommandError(gitMessage(result.stderr, result.stdout))
+    return `Cherry-picked ${hash.slice(0, 7)}`
+  })
+}
+
+export function revert(repoPath: string, hash: string): Promise<Result<string>> {
+  return wrap(async () => {
+    const repo = await resolveRepo(repoPath)
+    assertHash(hash)
+    await requireIdle(repo)
+    const parents = await commitParentCount(repo, hash)
+    const identity = await commitIdentityPrefix(repo, 'revert')
+    const args = [...identity, 'revert', '--no-edit']
+    if (parents > 1) args.push('-m', '1')
+    args.push(hash)
+    const result = await runGit(repo, args, { check: false, editor: QUIET_EDITOR })
+    if (result.code !== 0) throw new GitCommandError(gitMessage(result.stderr, result.stdout))
+    return `Reverted ${hash.slice(0, 7)}`
+  })
+}
+
+export function resetTo(repoPath: string, hash: string, mode: ResetMode): Promise<Result<string>> {
+  return wrap(async () => {
+    const repo = await resolveRepo(repoPath)
+    assertHash(hash)
+    if (mode !== 'soft' && mode !== 'mixed' && mode !== 'hard') throw new GitCommandError('Invalid reset mode')
+    await requireIdle(repo)
+    await runGit(repo, ['reset', `--${mode}`, hash], { check: true })
+    return `Reset ${mode} to ${hash.slice(0, 7)}`
+  })
+}
+
+export function mergeBranch(repoPath: string, name: string): Promise<Result<string>> {
+  return wrap(async () => {
+    const repo = await resolveRepo(repoPath)
+    if (typeof name !== 'string' || name.length === 0 || name.length > 300 || name.startsWith('-') || name.includes('\0')) {
+      throw new GitCommandError('Invalid branch name')
+    }
+    await requireIdle(repo)
+    const branches = await listBranches(repo)
+    const local = branches.find((branch) => !branch.remote && branch.name === name)
+    if (!local) throw new GitCommandError('Branch not found')
+    if (local.current) throw new GitCommandError('That branch is already checked out')
+    const identity = await commitIdentityPrefix(repo, 'merge')
+    const result = await runGit(repo, [...identity, 'merge', '--no-edit', '--', name], { check: false, editor: QUIET_EDITOR })
+    if (result.code !== 0) throw new GitCommandError(gitMessage(result.stderr, result.stdout))
+    return outputText(result) || `Merged ${name}`
+  })
+}
+
+export function applyHunk(repoPath: string, patch: string, reverse: boolean): Promise<Result<string>> {
+  return wrap(async () => {
+    const repo = await resolveRepo(repoPath)
+    if (typeof patch !== 'string' || patch.length === 0 || patch.length > 1_000_000 || patch.includes('\0')) {
+      throw new GitCommandError('Invalid patch')
+    }
+    const normalized = patch.replace(/\r\n/g, '\n')
+    if (!normalized.startsWith('diff --git ')) throw new GitCommandError('Invalid patch')
+    const headers = normalized.split('\n').filter((line) => line.startsWith('diff --git '))
+    if (headers.length !== 1 || !normalized.includes('\n@@ ')) throw new GitCommandError('Invalid patch')
+    const args = ['apply', '--cached', '--whitespace=nowarn']
+    if (reverse) args.push('-R')
+    args.push('-')
+    await runGit(repo, args, { stdin: normalized.endsWith('\n') ? normalized : `${normalized}\n`, check: true })
+    return reverse ? 'Unstaged hunk' : 'Staged hunk'
   })
 }
 
@@ -1134,7 +1414,7 @@ export function pull(repoPath: string, mode: PullMode = 'default'): Promise<Resu
       throw new GitCommandError('This branch has no upstream to pull from')
     }
     const identity = await commitIdentityPrefix(repo, 'pull')
-    const result = await runGit(repo, [...identity, ...pullArgs(mode)], { check: true, timeoutMs: 120_000 })
+    const result = await runGit(repo, [...identity, ...pullArgs(mode)], { check: true, github: true, timeoutMs: 120_000 })
     return outputText(result)
   })
 }
@@ -1144,7 +1424,7 @@ async function fetchRemotes(repoPath: string, all: boolean): Promise<string> {
   const remotes = await listRemotes(repo)
   if (remotes.length === 0) throw new GitCommandError('This repository has no remotes')
   const args = all ? ['fetch', '--all', '--prune'] : ['fetch', '--prune']
-  const result = await runGit(repo, args, { check: true, timeoutMs: 120_000 })
+  const result = await runGit(repo, args, { check: true, github: true, timeoutMs: 120_000 })
   return outputText(result) || (all ? 'Fetched all remotes' : 'Fetched')
 }
 

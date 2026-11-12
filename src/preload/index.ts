@@ -13,7 +13,16 @@ const api: GraphGitApi = {
   unstage: (repoPath, paths) => ipcRenderer.invoke('repo:unstage', repoPath, paths),
   stageAll: (repoPath) => ipcRenderer.invoke('repo:stage-all', repoPath),
   unstageAll: (repoPath) => ipcRenderer.invoke('repo:unstage-all', repoPath),
-  commit: (repoPath, message, withUsers) => ipcRenderer.invoke('repo:commit', repoPath, message, withUsers),
+  commit: (repoPath, message, withUsers, amend) => ipcRenderer.invoke('repo:commit', repoPath, message, withUsers, amend === true),
+  discard: (repoPath, paths) => ipcRenderer.invoke('repo:discard', repoPath, paths),
+  takeSide: (repoPath, file, side) => ipcRenderer.invoke('repo:take-side', repoPath, file, side),
+  continueOperation: (repoPath) => ipcRenderer.invoke('repo:continue', repoPath),
+  abortOperation: (repoPath) => ipcRenderer.invoke('repo:abort', repoPath),
+  cherryPick: (repoPath, hash) => ipcRenderer.invoke('repo:cherry-pick', repoPath, hash),
+  revert: (repoPath, hash) => ipcRenderer.invoke('repo:revert', repoPath, hash),
+  resetTo: (repoPath, hash, mode) => ipcRenderer.invoke('repo:reset', repoPath, hash, mode),
+  mergeBranch: (repoPath, name) => ipcRenderer.invoke('repo:merge', repoPath, name),
+  applyHunk: (repoPath, patch, reverse) => ipcRenderer.invoke('repo:apply-hunk', repoPath, patch, reverse),
   checkout: (repoPath, name) => ipcRenderer.invoke('repo:checkout', repoPath, name),
   createBranch: (repoPath, name) => ipcRenderer.invoke('repo:create-branch', repoPath, name),
   deleteBranch: (repoPath, name, force) => ipcRenderer.invoke('repo:delete-branch', repoPath, name, force),
@@ -30,9 +39,9 @@ const api: GraphGitApi = {
   listPullRequests: (repoPath) => ipcRenderer.invoke('repo:pull-requests', repoPath),
   checkoutPullRequest: (repoPath, number) => ipcRenderer.invoke('repo:checkout-pr', repoPath, number),
   createPullRequest: (repoPath, title, base) => ipcRenderer.invoke('repo:create-pr', repoPath, title, base),
-  cloneRepo: (url, parentDir, folderName) => ipcRenderer.invoke('repo:clone', url, parentDir, folderName),
+  cloneRepo: (url, parentDir, folderName, account) => ipcRenderer.invoke('repo:clone', url, parentDir, folderName, account),
   pull: (repoPath, mode) => ipcRenderer.invoke('repo:pull', repoPath, mode ?? 'default'),
-  push: (repoPath) => ipcRenderer.invoke('repo:push', repoPath),
+  push: (repoPath, mode, remote) => ipcRenderer.invoke('repo:push', repoPath, mode ?? 'default', remote),
   fetch: (repoPath) => ipcRenderer.invoke('repo:fetch', repoPath),
   fetchAll: (repoPath) => ipcRenderer.invoke('repo:fetch-all', repoPath),
   initRepo: (repoPath) => ipcRenderer.invoke('repo:init', repoPath),
@@ -64,6 +73,11 @@ const api: GraphGitApi = {
     ipcRenderer.on('update:changed', listener)
     return () => ipcRenderer.removeListener('update:changed', listener)
   },
+  githubAccounts: () => ipcRenderer.invoke('github:accounts'),
+  githubSignIn: (username, token) => ipcRenderer.invoke('github:sign-in', username, token),
+  githubSignOut: (username) => ipcRenderer.invoke('github:sign-out', username),
+  githubSetDefault: (username) => ipcRenderer.invoke('github:default', username),
+  githubRepos: (username) => ipcRenderer.invoke('github:repos', username),
 }
 
 contextBridge.exposeInMainWorld('graphgit', api)

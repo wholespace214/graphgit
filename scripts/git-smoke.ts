@@ -3,14 +3,22 @@ import { spawnSync } from 'node:child_process'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { singleHunkPatch } from '../src/shared/diff'
 import { layoutCommits } from '../src/shared/layout'
 import { cloneUrlError, folderNameError, folderNameFromCloneUrl } from '../src/shared/clone'
+import { githubTokenError, githubUsernameError, redactSecret } from '../src/shared/github'
+import { assertGitHubSlug, emptyGitHubState, githubPageUrl, GitHubError, publicGitHubAccounts, withDefaultGitHubAccount, withGitHubAccount, withRepoAccount, withoutGitHubAccount } from '../src/main/githubSession'
 import type { Commit } from '../src/shared/types'
 import {
+  abortOperation,
+  applyHunk,
   checkout,
   checkoutTag,
+  cherryPick,
   cloneRepo,
   commit,
+  continueOperation,
+  discard,
   commitDiff,
   commitFiles,
   createBranch,
@@ -23,6 +31,11 @@ import {
   listPullRequests,
   listRemoteTags,
   loadRepo,
+  mergeBranch,
+  push,
+  resetTo,
+  revert,
+  takeSide,
   parseBranchHeader,
   parseBranches,
   formatCommitMessage,
@@ -149,6 +162,53 @@ function parserTests() {
   assert.equal(githubSlugFromUrl('git@github.com:acme/graphgit.git'), 'acme/graphgit')
   assert.equal(githubSlugFromUrl('https://github.com/acme/graphgit'), 'acme/graphgit')
   assert.equal(githubSlugFromUrl('https://gitlab.com/acme/graphgit.git'), null)
+  assert.equal(githubUsernameError('octocat'), null)
+  assert.equal(githubUsernameError('a'.repeat(39)), null)
+  assert.ok(githubUsernameError('-bad'))
+  assert.ok(githubUsernameError('bad-'))
+  assert.ok(githubUsernameError('bad--name'))
+  assert.ok(githubUsernameError('has space'))
+  assert.ok(githubUsernameError('a'.repeat(40)))
+  const sampleToken = `ghp_${'a'.repeat(36)}`
+  assert.equal(githubTokenError(sampleToken), null)
+  assert.equal(githubTokenError(`github_pat_${'b'.repeat(22)}`), null)
+  assert.ok(githubTokenError('short'))
+  assert.ok(githubTokenError(`${sampleToken.slice(0, 24)} ${sampleToken.slice(24)}`))
+  assert.equal(redactSecret(`auth ${sampleToken} end`, sampleToken), 'auth [token] end')
+  assert.equal(assertGitHubSlug('acme/graphgit'), 'acme/graphgit')
+  assert.throws(() => assertGitHubSlug('../secret'), GitHubError)
+  assert.equal(githubPageUrl('https://github.com/acme/graphgit/pull/1'), 'https://github.com/acme/graphgit/pull/1')
+  assert.equal(githubPageUrl('https://user:token@github.com/acme/graphgit'), null)
+  assert.equal(githubPageUrl('http://github.com/acme/graphgit'), null)
+  const bobToken = `github_pat_${'b'.repeat(22)}`
+  let accounts = withGitHubAccount(emptyGitHubState(), { username: 'alice', token: sampleToken })
+  assert.equal(accounts.defaultUsername, 'alice')
+  accounts = withGitHubAccount(accounts, { username: 'bob', token: bobToken })
+  assert.equal(accounts.accounts.length, 2)
+  assert.equal(accounts.defaultUsername, 'alice')
+  accounts = withGitHubAccount(accounts, { username: 'alice', token: `ghp_${'c'.repeat(36)}` })
+  assert.equal(accounts.accounts.length, 2)
+  assert.notEqual(accounts.accounts.find((account) => account.username === 'alice')?.token, sampleToken)
+  accounts = withDefaultGitHubAccount(accounts, 'bob')
+  assert.equal(accounts.defaultUsername, 'bob')
+  assert.equal(publicGitHubAccounts(accounts).accounts.find((account) => account.username === 'bob')?.default, true)
+  accounts = withRepoAccount(accounts, path.join(tmpdir(), 'graphgit-account-link'), 'alice')
+  assert.equal(accounts.repos.length, 1)
+  assert.equal(accounts.repos[0]?.username, 'alice')
+  accounts = withoutGitHubAccount(accounts, 'bob')
+  assert.equal(accounts.defaultUsername, 'alice')
+  assert.equal(accounts.repos.length, 1)
+  accounts = withoutGitHubAccount(accounts, 'alice')
+  assert.equal(accounts.accounts.length, 0)
+  assert.equal(accounts.repos.length, 0)
+  assert.equal(accounts.defaultUsername, null)
+  let many = emptyGitHubState()
+  for (let index = 0; index < 8; index += 1) {
+    many = withGitHubAccount(many, { username: `user${index}`, token: `ghp_${String(index).repeat(36)}` })
+  }
+  assert.equal(many.accounts.length, 8)
+  assert.equal(many.defaultUsername, 'user0')
+  assert.throws(() => withGitHubAccount(many, { username: 'user8', token: `ghp_${'d'.repeat(36)}` }), GitHubError)
 
   assert.deepEqual(parseNameStatusZ('M\0src/app.ts\0A\0README.md\0'), [
     { status: 'M', path: 'src/app.ts' },
@@ -438,8 +498,166 @@ async function main() {
   assert.equal(rejected.ok, false)
 
   await syncModeTests()
+  await historyTests()
 
   console.log('smoke ok')
+}
+
+async function historyTests() {
+  const sample = [
+    'diff --git a/notes.txt b/notes.txt',
+    'index 111..222 100644',
+    '--- a/notes.txt',
+    '+++ b/notes.txt',
+    '@@ -1,3 +1,3 @@',
+    ' one',
+    '-two',
+    '+TWO',
+    ' three',
+    '@@ -8,3 +8,3 @@',
+    ' eight',
+    '-nine',
+    '+NINE',
+    ' ten',
+  ].join('\n')
+  const first = singleHunkPatch(sample, 0)
+  const second = singleHunkPatch(sample, 1)
+  assert.ok(first)
+  assert.ok(second)
+  assert.match(first ?? '', /TWO/)
+  assert.doesNotMatch(first ?? '', /NINE/)
+  assert.match(second ?? '', /NINE/)
+  assert.equal(singleHunkPatch(sample, 2), null)
+  assert.equal(singleHunkPatch('Binary file.', 0), null)
+
+  const root = path.join(tmpdir(), 'graphgit-history-test')
+  await rm(root, { recursive: true, force: true })
+  await mkdir(root)
+  const repo = path.join(root, 'repo')
+  await mkdir(repo)
+  demoGit(repo, ['init', '-b', 'main'])
+  const lines = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`)
+  await writeFile(path.join(repo, 'notes.txt'), `${lines.join('\n')}\n`)
+  demoGit(repo, ['add', '.'])
+  demoGit(repo, ['commit', '-m', 'base'])
+
+  lines[1] = 'TWO'
+  lines[16] = 'NINE'
+  await writeFile(path.join(repo, 'notes.txt'), `${lines.join('\n')}\n`)
+  const diff = await workingDiff(repo, 'notes.txt', false)
+  assert.equal(diff.ok, true, diff.ok ? '' : diff.error)
+  if (diff.ok) {
+    const hunk = singleHunkPatch(diff.data, 0)
+    assert.ok(hunk)
+    assert.equal(singleHunkPatch(diff.data, 1) !== null, true)
+    const applied = await applyHunk(repo, hunk ?? '', false)
+    assert.equal(applied.ok, true, applied.ok ? '' : applied.error)
+    const partial = await loadRepo(repo)
+    assert.equal(partial.ok, true)
+    if (partial.ok) {
+      const file = partial.data.changes.find((change) => change.path === 'notes.txt')
+      assert.equal(file?.staged, true)
+      assert.equal(file?.unstaged, true)
+    }
+  }
+
+  assert.equal((await discard(repo, ['notes.txt'])).ok, true)
+  await writeFile(path.join(repo, 'extra.txt'), 'new\n')
+  const extra = await discard(repo, ['extra.txt'])
+  assert.equal(extra.ok, true, extra.ok ? '' : extra.error)
+  const wiped = await loadRepo(repo)
+  assert.equal(wiped.ok, true)
+  if (wiped.ok) assert.equal(wiped.data.changes.length, 0)
+
+  const amended = await commit(repo, 'renamed base', undefined, true)
+  assert.equal(amended.ok, true, amended.ok ? '' : amended.error)
+  assert.equal(demoGit(repo, ['log', '-1', '--format=%s']).trim(), 'renamed base')
+
+  demoGit(repo, ['checkout', '-b', 'feature'])
+  await writeFile(path.join(repo, 'picked.txt'), 'pick\n')
+  demoGit(repo, ['add', 'picked.txt'])
+  demoGit(repo, ['commit', '-m', 'feature'])
+  const feature = demoGit(repo, ['rev-parse', 'HEAD']).trim()
+  demoGit(repo, ['checkout', 'main'])
+  const picked = await cherryPick(repo, feature)
+  assert.equal(picked.ok, true, picked.ok ? '' : picked.error)
+  const reverted = await revert(repo, demoGit(repo, ['rev-parse', 'HEAD']).trim())
+  assert.equal(reverted.ok, true, reverted.ok ? '' : reverted.error)
+
+  const before = demoGit(repo, ['rev-parse', 'HEAD~1']).trim()
+  const reset = await resetTo(repo, before, 'mixed')
+  assert.equal(reset.ok, true, reset.ok ? '' : reset.error)
+  const afterReset = await loadRepo(repo)
+  assert.equal(afterReset.ok, true)
+  if (afterReset.ok && afterReset.data.changes.length > 0) {
+    const cleared = await discard(repo, afterReset.data.changes.map((change) => change.path))
+    assert.equal(cleared.ok, true, cleared.ok ? '' : cleared.error)
+  }
+
+  demoGit(repo, ['checkout', '-b', 'left'])
+  await writeFile(path.join(repo, 'notes.txt'), 'left\n')
+  demoGit(repo, ['add', 'notes.txt'])
+  demoGit(repo, ['commit', '-m', 'left'])
+  demoGit(repo, ['checkout', 'main'])
+  demoGit(repo, ['checkout', '-b', 'right'])
+  await writeFile(path.join(repo, 'notes.txt'), 'right\n')
+  demoGit(repo, ['add', 'notes.txt'])
+  demoGit(repo, ['commit', '-m', 'right'])
+  const merged = await mergeBranch(repo, 'left')
+  assert.equal(merged.ok, false)
+  const conflicted = await loadRepo(repo)
+  assert.equal(conflicted.ok, true)
+  if (conflicted.ok) assert.equal(conflicted.data.operation, 'merge')
+  const kept = await takeSide(repo, 'notes.txt', 'ours')
+  assert.equal(kept.ok, true, kept.ok ? '' : kept.error)
+  const continued = await continueOperation(repo)
+  assert.equal(continued.ok, true, continued.ok ? '' : continued.error)
+  const finished = await loadRepo(repo)
+  assert.equal(finished.ok, true)
+  if (finished.ok) assert.equal(finished.data.operation, null)
+
+  assert.equal((await cherryPick(repo, 'nope')).ok, false)
+  assert.equal((await resetTo(repo, 'abc', 'hard')).ok, false)
+  assert.equal((await mergeBranch(repo, '-bad')).ok, false)
+  assert.equal((await applyHunk(repo, 'not a patch', false)).ok, false)
+  assert.equal((await push(repo, 'lease')).ok, false)
+
+  demoGit(repo, ['checkout', '-b', 'side', 'main'])
+  await writeFile(path.join(repo, 'notes.txt'), 'side\n')
+  demoGit(repo, ['add', 'notes.txt'])
+  demoGit(repo, ['commit', '-m', 'side'])
+  const again = await mergeBranch(repo, 'left')
+  assert.equal(again.ok, false)
+  const aborted = await abortOperation(repo)
+  assert.equal(aborted.ok, true, aborted.ok ? '' : aborted.error)
+  const idle = await loadRepo(repo)
+  assert.equal(idle.ok, true)
+  if (idle.ok) assert.equal(idle.data.operation, null)
+
+  await writeFile(path.join(repo, 'fresh.txt'), 'hello\n')
+  const preview = await workingDiff(repo, 'fresh.txt', false)
+  assert.equal(preview.ok, true, preview.ok ? '' : preview.error)
+  if (preview.ok) {
+    assert.match(preview.data, /@@ -0,0 \+1,1 @@/)
+    assert.doesNotMatch(preview.data, /\+hello\n\+/)
+    const applied = await applyHunk(repo, singleHunkPatch(preview.data, 0) ?? '', false)
+    assert.equal(applied.ok, true, applied.ok ? '' : applied.error)
+  }
+  const stagedNew = await loadRepo(repo)
+  assert.equal(stagedNew.ok, true)
+  if (stagedNew.ok) {
+    const file = stagedNew.data.changes.find((change) => change.path === 'fresh.txt')
+    assert.equal(file?.staged, true)
+    assert.equal(file?.unstaged, false)
+  }
+  await writeFile(path.join(repo, 'bare.txt'), 'hello')
+  const bare = await workingDiff(repo, 'bare.txt', false)
+  assert.equal(bare.ok, true, bare.ok ? '' : bare.error)
+  if (bare.ok) {
+    assert.match(bare.data, /No newline at end of file/)
+    const applied = await applyHunk(repo, singleHunkPatch(bare.data, 0) ?? '', false)
+    assert.equal(applied.ok, true, applied.ok ? '' : applied.error)
+  }
 }
 
 async function syncModeTests() {

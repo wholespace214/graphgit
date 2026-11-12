@@ -1,4 +1,5 @@
-import type { Contributor, FileChange, PullMode, PullRequestList, RemoteTagList, RepoSnapshot, Result, UpdateState } from './types'
+import type { GitHubAccounts, GitHubRepoList } from './github'
+import type { ConflictSide, Contributor, FileChange, PullMode, PullRequestList, PushMode, RemoteTagList, RepoSnapshot, ResetMode, Result, UpdateState } from './types'
 
 export type CommitFiles = {
   files: FileChange[]
@@ -16,7 +17,16 @@ export type GraphGitApi = {
   unstage: (repoPath: string, paths: string[]) => Promise<Result<string>>
   stageAll: (repoPath: string) => Promise<Result<string>>
   unstageAll: (repoPath: string) => Promise<Result<string>>
-  commit: (repoPath: string, message: string, withUsers: Contributor[]) => Promise<Result<string>>
+  commit: (repoPath: string, message: string, withUsers: Contributor[], amend?: boolean) => Promise<Result<string>>
+  discard: (repoPath: string, paths: string[]) => Promise<Result<string>>
+  takeSide: (repoPath: string, file: string, side: ConflictSide) => Promise<Result<string>>
+  continueOperation: (repoPath: string) => Promise<Result<string>>
+  abortOperation: (repoPath: string) => Promise<Result<string>>
+  cherryPick: (repoPath: string, hash: string) => Promise<Result<string>>
+  revert: (repoPath: string, hash: string) => Promise<Result<string>>
+  resetTo: (repoPath: string, hash: string, mode: ResetMode) => Promise<Result<string>>
+  mergeBranch: (repoPath: string, name: string) => Promise<Result<string>>
+  applyHunk: (repoPath: string, patch: string, reverse: boolean) => Promise<Result<string>>
   checkout: (repoPath: string, name: string) => Promise<Result<string>>
   createBranch: (repoPath: string, name: string) => Promise<Result<string>>
   deleteBranch: (repoPath: string, name: string, force: boolean) => Promise<Result<string>>
@@ -33,9 +43,9 @@ export type GraphGitApi = {
   listPullRequests: (repoPath: string) => Promise<Result<PullRequestList>>
   checkoutPullRequest: (repoPath: string, number: number) => Promise<Result<string>>
   createPullRequest: (repoPath: string, title: string, base: string) => Promise<Result<string>>
-  cloneRepo: (url: string, parentDir: string, folderName: string) => Promise<Result<string>>
+  cloneRepo: (url: string, parentDir: string, folderName: string, account?: string) => Promise<Result<string>>
   pull: (repoPath: string, mode?: PullMode) => Promise<Result<string>>
-  push: (repoPath: string) => Promise<Result<string>>
+  push: (repoPath: string, mode?: PushMode, remote?: string) => Promise<Result<string>>
   fetch: (repoPath: string) => Promise<Result<string>>
   fetchAll: (repoPath: string) => Promise<Result<string>>
   initRepo: (repoPath: string) => Promise<Result<string>>
@@ -50,4 +60,9 @@ export type GraphGitApi = {
   checkForUpdates: () => Promise<UpdateState>
   installUpdate: () => Promise<void>
   onUpdateState: (cb: (state: UpdateState) => void) => () => void
+  githubAccounts: () => Promise<GitHubAccounts>
+  githubSignIn: (username: string, token: string) => Promise<Result<GitHubAccounts>>
+  githubSignOut: (username: string) => Promise<Result<GitHubAccounts>>
+  githubSetDefault: (username: string) => Promise<Result<GitHubAccounts>>
+  githubRepos: (username: string) => Promise<Result<GitHubRepoList>>
 }

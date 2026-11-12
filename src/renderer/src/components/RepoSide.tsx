@@ -26,6 +26,7 @@ export function RepoSide({
   onCheckout,
   onNewBranch,
   onDeleteBranch,
+  onMergeBranch,
   onCheckoutTag,
   onNewTag,
   onDeleteTag,
@@ -57,6 +58,7 @@ export function RepoSide({
   onCheckout: (name: string) => void
   onNewBranch: () => void
   onDeleteBranch: (name: string) => void
+  onMergeBranch: (name: string) => void
   onCheckoutTag: (name: string) => void
   onNewTag: () => void
   onDeleteTag: (name: string) => void
@@ -87,7 +89,14 @@ export function RepoSide({
       </div>
       <div className="sidebar-body">
         {tab === 'branches' && (
-          <BranchList branches={branches} busy={busy} onCheckout={onCheckout} onNewBranch={onNewBranch} onDelete={onDeleteBranch} />
+          <BranchList
+            branches={branches}
+            busy={busy}
+            onCheckout={onCheckout}
+            onNewBranch={onNewBranch}
+            onDelete={onDeleteBranch}
+            onMerge={onMergeBranch}
+          />
         )}
         {tab === 'tags' && (
           <TagList

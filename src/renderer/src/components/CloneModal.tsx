@@ -3,6 +3,7 @@ import { folderNameFromCloneUrl } from '@shared/clone'
 
 export function CloneModal({
   url,
+  account,
   destination,
   error,
   busy,
@@ -13,6 +14,7 @@ export function CloneModal({
   onSubmit,
 }: {
   url: string
+  account: string | null
   destination: string
   error: string | null
   busy: boolean
@@ -43,6 +45,7 @@ export function CloneModal({
         }}
       >
         <h2>Clone repository</h2>
+        {account && <p className="muted">Using GitHub account {account}.</p>}
         <label>
           Repository URL
           <input autoFocus value={url} placeholder="https://example.com/team/app.git" onChange={(event) => onUrl(event.target.value)} />

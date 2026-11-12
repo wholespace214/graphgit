@@ -4,13 +4,15 @@ import type { UpdateState } from '@shared/types'
 export function useUpdateState(): UpdateState | null {
   const [state, setState] = useState<UpdateState | null>(null)
   useEffect(() => {
+    const api = window.graphgit
+    if (!api?.onUpdateState || !api.updateState) return
     let live = true
     const apply = (next: UpdateState) => {
       if (!live) return
       setState((current) => (!current || next.revision >= current.revision ? next : current))
     }
-    const stop = window.graphgit.onUpdateState(apply)
-    void window.graphgit.updateState().then(apply)
+    const stop = api.onUpdateState(apply)
+    void api.updateState().then(apply)
     return () => {
       live = false
       stop()
