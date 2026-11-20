@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Change, Contributor, FileChange, PullRequest, RemoteTag, RepoSnapshot, StashEntry } from '@shared/types'
+import type { Change, Contributor, FileChange, PullRequest, RemoteTag, RepoSnapshot, ResetMode, StashEntry } from '@shared/types'
+import { singleHunkPatch } from '@shared/diff'
 import type { Result } from '@shared/types'
 import { BranchModal } from './components/BranchModal'
 import { CloneModal } from './components/CloneModal'
@@ -13,6 +14,7 @@ import { StashModal } from './components/StashModal'
 import { RepoSide, type SideTab } from './components/RepoSide'
 import { TagModal } from './components/TagModal'
 import { Toolbar } from './components/Toolbar'
+import { UpdateBanner } from './components/UpdateBanner'
 import { WidthHandle } from './components/WidthHandle'
 import { baseName, formatWhen } from './format'
 import {
@@ -43,6 +45,13 @@ type WorkSel = { path: string; staged: boolean }
 
 const CLONE_PARENT = 'graphgit.cloneParent'
 
+function resetPrompt(hash: string, mode: ResetMode): string {
+  const short = hash.slice(0, 7)
+  if (mode === 'hard') return `Reset the branch to ${short} and discard all local changes?`
+  if (mode === 'soft') return `Move the branch to ${short} and keep the changes staged?`
+  return `Move the branch to ${short} and keep the changes unstaged?`
+}
+
 function repoSignature(snap: RepoSnapshot): string {
   const header = snap.header
   const commits = snap.commits
@@ -65,6 +74,7 @@ function repoSignature(snap: RepoSnapshot): string {
     commits,
     branches,
     changes,
+    snap.operation ?? '',
   ].join('\n---\n')
 }
 
@@ -89,6 +99,7 @@ export function App() {
   const [panel, setPanel] = useState<'commit' | 'work' | 'stash'>('commit')
   const [workSel, setWorkSel] = useState<WorkSel | null>(null)
   const [message, setMessage] = useState('')
+  const [amend, setAmend] = useState(false)
   const [withUsers, setWithUsers] = useState<Contributor[]>([])
   const [layout, setLayout] = useState(readLayout)
   const [frame, setFrame] = useState({ width: 0, height: 0 })
@@ -115,6 +126,7 @@ export function App() {
   const [remoteTagsReady, setRemoteTagsReady] = useState(false)
   const [cloneOpen, setCloneOpen] = useState(false)
   const [cloneUrl, setCloneUrl] = useState('')
+  const [cloneAccount, setCloneAccount] = useState<string | null>(null)
   const [cloneDest, setCloneDest] = useState('')
   const [cloneError, setCloneError] = useState<string | null>(null)
 
@@ -207,6 +219,7 @@ export function App() {
         setSide('branches')
         setQuery('')
         setMessage('')
+        setAmend(false)
         setWorkSel(null)
         stashRef.current = null
         setStashSel(null)
@@ -359,7 +372,7 @@ export function App() {
   }, [api, loadCommit])
 
   const runAction = useCallback(
-    async (label: string, action: () => Promise<Result<string>>, mode: 'keep' | 'head') => {
+    async (label: string, action: () => Promise<Result<string>>, mode: 'keep' | 'head', reloadOnError?: 'keep' | 'head') => {
       if (busyRef.current) return
       busyRef.current = true
       setBusy(label)
@@ -367,12 +380,14 @@ export function App() {
         const result = await action()
         if (!result.ok) {
           showError(result.error)
+          if (reloadOnError) await reload(reloadOnError)
           return
         }
         if (result.data) showOk(result.data)
         await reload(mode)
       } catch (error) {
         showError(error instanceof Error ? error.message : String(error))
+        if (reloadOnError) await reload(reloadOnError)
       } finally {
         busyRef.current = false
         setBusy(null)
@@ -392,7 +407,19 @@ export function App() {
     const saved = localStorage.getItem(CLONE_PARENT) || ''
     const parent = current ? current.replace(/[\\/][^\\/]+$/, '') : saved
     setCloneError(null)
+    setCloneAccount(null)
     setCloneUrl('')
+    setCloneDest(parent)
+    setCloneOpen(true)
+  }, [])
+
+  const openGitHubClone = useCallback((account: string, url: string) => {
+    const current = snapRef.current?.path
+    const saved = localStorage.getItem(CLONE_PARENT) || ''
+    const parent = current ? current.replace(/[\\/][^\\/]+$/, '') : saved
+    setCloneError(null)
+    setCloneAccount(account)
+    setCloneUrl(url)
     setCloneDest(parent)
     setCloneOpen(true)
   }, [])
@@ -438,7 +465,7 @@ export function App() {
   }, [repoOpen])
 
   useEffect(() => {
-    if (page !== 'repo' || !snap?.path || !api.watchRepo) return
+    if (page !== 'repo' || !snap?.path || !api?.watchRepo) return
     let timer = 0
     let closed = false
     const schedule = () => {
@@ -758,7 +785,7 @@ export function App() {
     setBusy('Cloning')
     setCloneError(null)
     try {
-      const result = await api.cloneRepo(cloneUrl.trim(), parent, folder)
+      const result = await api.cloneRepo(cloneUrl.trim(), parent, folder, cloneAccount ?? undefined)
       if (!result.ok) {
         setCloneError(result.error)
         return
@@ -905,7 +932,11 @@ export function App() {
                 'head',
               )
             }
-            onPush={() => void runAction('Pushing', () => api.push(snap.path), 'keep')}
+            onPush={(mode, remote) => {
+              if (mode === 'lease' && !window.confirm('Update the remote only if nobody else has pushed? This rewrites the remote branch.')) return
+              const label = mode === 'lease' ? 'Pushing (force-with-lease)' : remote ? `Pushing to ${remote}` : 'Pushing'
+              void runAction(label, () => api.push(snap.path, mode, remote), 'keep')
+            }}
             onSettings={() => {
               setSettingsFrom('repo')
               setPage('settings')
@@ -950,6 +981,10 @@ export function App() {
                   setBranchModal(true)
                 }}
                 onDeleteBranch={(name) => void onDeleteBranch(name)}
+                onMergeBranch={(name) => {
+                  if (!window.confirm(`Merge ${name} into ${snap.header.name || 'the current branch'}?`)) return
+                  void runAction('Merging', () => api.mergeBranch(snap.path, name), 'head', 'keep')
+                }}
                 onCheckoutTag={(name) => void runAction('Checking out tag', () => api.checkoutTag(snap.path, name), 'head')}
                 onNewTag={() => {
                   setModalError(null)
@@ -1024,6 +1059,24 @@ export function App() {
               }}
               filesHeight={Number.isFinite(layout.files) ? layout.files : DEFAULT_LAYOUT.files}
               onFilesHeight={(height) => setLayout((current) => ({ ...current, files: clamp(height, FILES_MIN, FILES_MAX) }))}
+              busy={Boolean(busy)}
+              historyLocked={Boolean(snap.operation)}
+              hunkLabel={workSel?.staged ? 'Unstage hunk' : 'Stage hunk'}
+              onHunk={
+                panel === 'work' && workSel && diffText.startsWith('diff --git ') && !snap.changes.find((change) => change.path === workSel.path)?.conflict
+                  ? (index) => {
+                      const patch = singleHunkPatch(diffText, index)
+                      if (!patch || !workSel) return
+                      void runAction(workSel.staged ? 'Unstaging hunk' : 'Staging hunk', () => api.applyHunk(snap.path, patch, workSel.staged), 'keep')
+                    }
+                  : undefined
+              }
+              onCherryPick={(hash) => void runAction('Cherry-picking', () => api.cherryPick(snap.path, hash), 'head', 'keep')}
+              onRevert={(hash) => void runAction('Reverting', () => api.revert(snap.path, hash), 'head', 'keep')}
+              onReset={(hash, mode) => {
+                if (!window.confirm(resetPrompt(hash, mode))) return
+                void runAction('Resetting', () => api.resetTo(snap.path, hash, mode), 'head')
+              }}
             />
             </div>
             <WidthHandle
@@ -1062,12 +1115,14 @@ export function App() {
             onCommit={(people) => {
               const text = message.trim()
               if (!text) return
+              const amending = amend && !snap.header.empty && !snap.operation
               void runAction(
-                'Committing',
+                amending ? 'Amending' : 'Committing',
                 async () => {
-                  const result = await api.commit(snap.path, text, people)
+                  const result = await api.commit(snap.path, text, people, amending)
                   if (result.ok) {
                     setMessage('')
+                    setAmend(false)
                     setWithUsers([])
                   }
                   return result
@@ -1081,6 +1136,21 @@ export function App() {
             onUnstageAll={() => void runAction('Unstaging', () => api.unstageAll(snap.path), 'keep')}
             onStash={openStashModal}
             onSelectChange={(change, staged) => void selectChange(change, staged)}
+            operation={snap.operation ?? null}
+            amend={amend}
+            canAmend={!snap.header.empty && !snap.operation}
+            onAmend={setAmend}
+            onDiscard={(file) => {
+              if (!window.confirm(`Discard changes to ${file}?`)) return
+              void runAction('Discarding', () => api.discard(snap.path, [file]), 'keep')
+            }}
+            onTakeSide={(file, side) => void runAction(side === 'ours' ? 'Keeping ours' : 'Keeping theirs', () => api.takeSide(snap.path, file, side), 'keep', 'keep')}
+            onContinue={() => void runAction('Continuing', () => api.continueOperation(snap.path), 'head', 'keep')}
+            onAbort={() => {
+              const name = snap.operation ?? 'operation'
+              if (!window.confirm(`Abort the ${name} and return to the commit before it started?`)) return
+              void runAction('Aborting', () => api.abortOperation(snap.path), 'head')
+            }}
           />
           </div>
           {branchModal && (
@@ -1139,6 +1209,7 @@ export function App() {
           initError={notice?.kind === 'err' ? notice.text : null}
           onOpen={() => void openDialog()}
           onClone={openClone}
+          onCloneGitHub={openGitHubClone}
           onNew={() => void onNewRepo()}
           onInit={() => void onInit()}
           onCancelInit={() => {
@@ -1154,9 +1225,11 @@ export function App() {
           }}
         />
       )}
+      <UpdateBanner />
       {cloneOpen && (
         <CloneModal
           url={cloneUrl}
+          account={cloneAccount}
           destination={cloneDest}
           error={cloneError}
           busy={Boolean(busy)}

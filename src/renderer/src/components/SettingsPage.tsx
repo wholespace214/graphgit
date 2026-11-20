@@ -1,5 +1,7 @@
 import { useRef, useState } from 'react'
+import { updateStatus, useUpdateState } from '../useUpdate'
 import { BackButton } from './BackButton'
+import { GitHubSettings } from './GitHubSettings'
 import { SettingsButton } from './SettingsButton'
 import { WindowControls } from './WindowControls'
 import { Logo } from './Logo'
@@ -17,6 +19,8 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   const [saved, setSaved] = useState<SavedTheme>(readSaved)
   const [error, setError] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const update = useUpdateState()
+  const canCheck = update?.phase === 'idle' || update?.phase === 'current' || update?.phase === 'error'
 
   function choose(selected: SavedTheme['selected']) {
     if (selected === 'custom' && !saved.custom) return
@@ -69,7 +73,22 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
         </div>
       </header>
       <div className="settings-body">
-        <h1>Appearance</h1>
+        <div className="settings-content">
+        <h1>Updates</h1>
+        <p>{update ? updateStatus(update) : 'Looking up the current version.'}</p>
+        <div className="welcome-actions">
+          {update?.phase === 'ready' && (
+            <button type="button" className="primary" onClick={() => void window.graphgit.installUpdate()}>
+              Restart and install
+            </button>
+          )}
+          <button type="button" className="ghost" disabled={!canCheck} onClick={() => void window.graphgit.checkForUpdates()}>
+            Check for updates
+          </button>
+        </div>
+        <h2 className="update-heading">GitHub</h2>
+        <GitHubSettings />
+        <h2 className="update-heading">Appearance</h2>
         <p>Choose how GraphGit looks. The choice stays on this computer.</p>
         <div className="theme-grid">
           {THEMES.map((theme) => (
@@ -122,6 +141,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
             onFile(file)
           }}
         />
+        </div>
       </div>
     </div>
   )

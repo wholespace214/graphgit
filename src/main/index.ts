@@ -2,40 +2,65 @@ import { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, type WebContents 
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { PullMode } from '../shared/types'
+import { redactSecret } from '../shared/github'
+import type { ConflictSide, PullMode, PushMode, ResetMode } from '../shared/types'
 import {
+  abortOperation,
+  applyHunk,
   checkout,
   checkoutPullRequest,
   checkoutTag,
+  cherryPick,
   cloneRepo,
   commit,
   commitDiff,
   commitFiles,
+  continueOperation,
   createBranch,
   createPullRequest,
   createTag,
   deleteBranch,
   deleteTag,
+  discard,
   fetchAll,
   fetchRemote,
   initRepo,
   listPullRequests,
   listRemoteTags,
   loadRepo,
+  mergeBranch,
   pull,
   push,
   pushTag,
   applyStash,
   dropStash,
   popStash,
+  resetTo,
+  revert,
   saveStash,
   stashDiff,
   stage,
   stageAll,
+  takeSide,
   unstage,
   unstageAll,
   workingDiff,
 } from './git'
+import { loadStoredGitHubAccounts, storeGitHubAccounts } from './githubAccount'
+import {
+  currentGitHubState,
+  emptyGitHubState,
+  listGitHubRepos,
+  publicGitHubAccounts,
+  redactSecrets,
+  setGitHubPersister,
+  setGitHubState,
+  verifyGitHubAccount,
+  withDefaultGitHubAccount,
+  withGitHubAccount,
+  withoutGitHubAccount,
+} from './githubSession'
+import { checkForUpdates, currentUpdateState, installDownloadedUpdate, setupAutoUpdate } from './update'
 import { watchRepo } from './watch'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -123,6 +148,20 @@ function pullMode(mode: unknown): PullMode {
   return 'default'
 }
 
+function pushMode(mode: unknown): PushMode {
+  return mode === 'lease' ? 'lease' : 'default'
+}
+
+function conflictSide(side: unknown): ConflictSide {
+  if (side === 'ours' || side === 'theirs') return side
+  throw new Error('Invalid conflict side')
+}
+
+function resetMode(mode: unknown): ResetMode {
+  if (mode === 'soft' || mode === 'mixed' || mode === 'hard') return mode
+  throw new Error('Invalid reset mode')
+}
+
 function handle<T>(channel: string, fn: (...args: unknown[]) => Promise<T>) {
   ipcMain.handle(channel, async (_event, ...args) => {
     try {
@@ -183,6 +222,11 @@ function registerIpc() {
     BrowserWindow.fromWebContents(event.sender)?.close()
   })
   ipcMain.handle('window:is-maximized', (event) => Boolean(BrowserWindow.fromWebContents(event.sender)?.isMaximized()))
+  ipcMain.handle('update:state', () => currentUpdateState())
+  ipcMain.handle('update:check', () => checkForUpdates())
+  ipcMain.handle('update:install', () => {
+    installDownloadedUpdate()
+  })
   ipcMain.handle('repo:pick', async (event, defaultPath: unknown) => {
     const parent = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const options = {
@@ -212,9 +256,18 @@ function registerIpc() {
   handle('repo:unstage', (repoPath, paths) => unstage(String(repoPath ?? ''), Array.isArray(paths) ? paths.map(String) : []))
   handle('repo:stage-all', (repoPath) => stageAll(String(repoPath ?? '')))
   handle('repo:unstage-all', (repoPath) => unstageAll(String(repoPath ?? '')))
-  handle('repo:commit', (repoPath, message, withUsers) =>
-    commit(String(repoPath ?? ''), String(message ?? ''), withUsers),
+  handle('repo:commit', (repoPath, message, withUsers, amend) =>
+    commit(String(repoPath ?? ''), String(message ?? ''), withUsers, amend === true),
   )
+  handle('repo:discard', (repoPath, paths) => discard(String(repoPath ?? ''), Array.isArray(paths) ? paths.map(String) : []))
+  handle('repo:take-side', (repoPath, file, side) => takeSide(String(repoPath ?? ''), String(file ?? ''), conflictSide(side)))
+  handle('repo:continue', (repoPath) => continueOperation(String(repoPath ?? '')))
+  handle('repo:abort', (repoPath) => abortOperation(String(repoPath ?? '')))
+  handle('repo:cherry-pick', (repoPath, hash) => cherryPick(String(repoPath ?? ''), String(hash ?? '')))
+  handle('repo:revert', (repoPath, hash) => revert(String(repoPath ?? ''), String(hash ?? '')))
+  handle('repo:reset', (repoPath, hash, mode) => resetTo(String(repoPath ?? ''), String(hash ?? ''), resetMode(mode)))
+  handle('repo:merge', (repoPath, name) => mergeBranch(String(repoPath ?? ''), String(name ?? '')))
+  handle('repo:apply-hunk', (repoPath, patch, reverse) => applyHunk(String(repoPath ?? ''), String(patch ?? ''), reverse === true))
   handle('repo:checkout', (repoPath, name) => checkout(String(repoPath ?? ''), String(name ?? '')))
   handle('repo:create-branch', (repoPath, name) => createBranch(String(repoPath ?? ''), String(name ?? '')))
   handle('repo:delete-branch', (repoPath, name, force) =>
@@ -239,14 +292,60 @@ function registerIpc() {
   handle('repo:create-pr', (repoPath, title, base) =>
     createPullRequest(String(repoPath ?? ''), String(title ?? ''), String(base ?? '')),
   )
-  handle('repo:clone', (url, parentDir, folderName) =>
-    cloneRepo(String(url ?? ''), String(parentDir ?? ''), String(folderName ?? '')),
+  handle('repo:clone', (url, parentDir, folderName, account) =>
+    cloneRepo(String(url ?? ''), String(parentDir ?? ''), String(folderName ?? ''), typeof account === 'string' ? account : undefined),
   )
   handle('repo:pull', (repoPath, mode) => pull(String(repoPath ?? ''), pullMode(mode)))
-  handle('repo:push', (repoPath) => push(String(repoPath ?? '')))
+  handle('repo:push', (repoPath, mode, remote) =>
+    push(String(repoPath ?? ''), pushMode(mode), typeof remote === 'string' ? remote : undefined),
+  )
   handle('repo:fetch', (repoPath) => fetchRemote(String(repoPath ?? '')))
   handle('repo:fetch-all', (repoPath) => fetchAll(String(repoPath ?? '')))
   handle('repo:init', (repoPath) => initRepo(String(repoPath ?? '')))
+  ipcMain.handle('github:accounts', () => publicGitHubAccounts())
+  ipcMain.handle('github:sign-in', async (_event, username: unknown, token: unknown) => {
+    const secret = String(token ?? '')
+    try {
+      const verified = await verifyGitHubAccount(String(username ?? ''), secret)
+      const next = withGitHubAccount(currentGitHubState(), verified)
+      await storeGitHubAccounts(next)
+      setGitHubState(next)
+      return { ok: true, data: publicGitHubAccounts(next) }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not sign in to GitHub.'
+      return { ok: false, error: redactSecrets(redactSecret(message, secret)).slice(0, 500) }
+    }
+  })
+  ipcMain.handle('github:sign-out', async (_event, username: unknown) => {
+    try {
+      const next = withoutGitHubAccount(currentGitHubState(), String(username ?? ''))
+      await storeGitHubAccounts(next)
+      setGitHubState(next)
+      return { ok: true, data: publicGitHubAccounts(next) }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not remove that GitHub account.'
+      return { ok: false, error: redactSecrets(message).slice(0, 500) }
+    }
+  })
+  ipcMain.handle('github:default', async (_event, username: unknown) => {
+    try {
+      const next = withDefaultGitHubAccount(currentGitHubState(), String(username ?? ''))
+      await storeGitHubAccounts(next)
+      setGitHubState(next)
+      return { ok: true, data: publicGitHubAccounts(next) }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not change the default GitHub account.'
+      return { ok: false, error: redactSecrets(message).slice(0, 500) }
+    }
+  })
+  ipcMain.handle('github:repos', async (_event, username: unknown) => {
+    try {
+      return { ok: true, data: await listGitHubRepos(String(username ?? '')) }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not list GitHub repositories.'
+      return { ok: false, error: redactSecrets(message).slice(0, 500) }
+    }
+  })
 }
 
 const gotLock = app.requestSingleInstanceLock()
@@ -259,10 +358,17 @@ if (!gotLock) {
     if (mainWindow.isMinimized()) mainWindow.restore()
     mainWindow.focus()
   })
-  void app.whenReady().then(() => {
+  void app.whenReady().then(async () => {
     app.setAppUserModelId('com.graphgit.app')
     Menu.setApplicationMenu(null)
+    setGitHubPersister(storeGitHubAccounts)
+    try {
+      setGitHubState(await loadStoredGitHubAccounts())
+    } catch {
+      setGitHubState(emptyGitHubState())
+    }
     createWindow()
+    setupAutoUpdate()
   })
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()

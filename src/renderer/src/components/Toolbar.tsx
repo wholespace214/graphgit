@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { BranchHeader, PullMode } from '@shared/types'
+import type { BranchHeader, PullMode, PushMode } from '@shared/types'
 import { baseName } from '../format'
 import { BackButton } from './BackButton'
 import { Logo } from './Logo'
@@ -28,7 +28,7 @@ export function Toolbar({
   onRefresh: () => void
   onFetch: (all: boolean) => void
   onPull: (mode: PullMode) => void
-  onPush: () => void
+  onPush: (mode: PushMode, remote?: string) => void
   onSettings: () => void
 }) {
   const noRemote = remotes.length === 0
@@ -98,9 +98,21 @@ export function Toolbar({
           ]}
           onSelect={(id) => onPull(id === 'ff' || id === 'ff-only' || id === 'rebase' ? id : 'default')}
         />
-        <button className="ghost" onClick={onPush} disabled={!canPush} title={pushTitle}>
-          Push
-        </button>
+        <SplitButton
+          label="Push"
+          title={pushTitle}
+          disabled={!canPush}
+          items={[
+            { id: 'default', label: 'Push' },
+            { id: 'lease', label: 'Push (force-with-lease)' },
+            ...(remotes.length > 1 ? remotes.map((name) => ({ id: `remote:${name}`, label: `Push to ${name}` })) : []),
+          ]}
+          onSelect={(id) => {
+            if (id === 'lease') onPush('lease')
+            else if (id.startsWith('remote:')) onPush('default', id.slice('remote:'.length))
+            else onPush('default')
+          }}
+        />
         <button className="primary" onClick={onOpen} disabled={Boolean(busy)}>
           Open
         </button>

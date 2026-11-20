@@ -6,12 +6,14 @@ export function BranchList({
   onCheckout,
   onNewBranch,
   onDelete,
+  onMerge,
 }: {
   branches: BranchInfo[]
   busy: boolean
   onCheckout: (name: string) => void
   onNewBranch: () => void
   onDelete: (name: string) => void
+  onMerge: (name: string) => void
 }) {
   const locals = branches.filter((branch) => !branch.remote)
   const groups = new Map<string, BranchInfo[]>()
@@ -36,7 +38,7 @@ export function BranchList({
           <h2>Local</h2>
           {locals.length === 0 && <p className="muted pad">No branches yet.</p>}
           {locals.map((branch) => (
-            <BranchRow key={branch.name} branch={branch} busy={busy} onCheckout={onCheckout} onDelete={onDelete} />
+            <BranchRow key={branch.name} branch={branch} busy={busy} onCheckout={onCheckout} onDelete={onDelete} onMerge={onMerge} />
           ))}
         </section>
         {[...groups.entries()].map(([remote, remoteBranches]) => (
@@ -57,11 +59,13 @@ function BranchRow({
   busy,
   onCheckout,
   onDelete,
+  onMerge,
 }: {
   branch: BranchInfo
   busy: boolean
   onCheckout: (name: string) => void
   onDelete: (name: string) => void
+  onMerge?: (name: string) => void
 }) {
   const short = branch.remote ? branch.name.slice(branch.name.indexOf('/') + 1) : branch.name
   return (
@@ -70,6 +74,11 @@ function BranchRow({
         <span className="branch-name">{short}</span>
         {branch.current && <span className="current-dot" />}
       </button>
+      {!branch.remote && !branch.current && onMerge && (
+        <button type="button" className="text-button" title="Merge into current branch" disabled={busy} onClick={() => onMerge(branch.name)}>
+          Merge
+        </button>
+      )}
       {!branch.remote && !branch.current && (
         <button className="icon-button" title="Delete local branch" disabled={busy} onClick={() => onDelete(branch.name)}>
           ×

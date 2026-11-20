@@ -58,6 +58,14 @@ export type FileChange = {
   oldPath?: string
 }
 
+export type RepoOperation = 'merge' | 'rebase' | 'cherry-pick' | 'revert'
+
+export type ResetMode = 'soft' | 'mixed' | 'hard'
+
+export type PushMode = 'default' | 'lease'
+
+export type ConflictSide = 'ours' | 'theirs'
+
 export type RepoSnapshot = {
   path: string
   header: BranchHeader
@@ -68,6 +76,7 @@ export type RepoSnapshot = {
   changes: Change[]
   remotes: string[]
   contributors: Contributor[]
+  operation: RepoOperation | null
   truncated: boolean
 }
 
@@ -111,3 +120,14 @@ export type PullRequestList = {
 }
 
 export type PullMode = 'default' | 'ff' | 'ff-only' | 'rebase'
+
+export type UpdatePhase = 'disabled' | 'idle' | 'checking' | 'downloading' | 'ready' | 'current' | 'error'
+
+export type UpdateState = {
+  revision: number
+  phase: UpdatePhase
+  currentVersion: string
+  availableVersion: string | null
+  percent: number | null
+  detail: string | null
+}

@@ -70,6 +70,10 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: false
         run: npm run dist
 
+      - name: Drop builder debug output
+        shell: bash
+        run: rm -f release/builder-debug.yml
+
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
@@ -82,4 +86,5 @@ jobs:
             release/*.zip
             release/*.AppImage
             release/*.deb
-            release/latest*.yml
+            release/*.yml
+            release/*.blockmap

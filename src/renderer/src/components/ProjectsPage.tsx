@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { baseName, formatWhen } from '../format'
 import type { Project } from '../projects'
+import { GitHubRepos } from './GitHubRepos'
 import { Logo } from './Logo'
 import { SettingsButton } from './SettingsButton'
 import { WindowControls } from './WindowControls'
@@ -13,6 +14,7 @@ export function ProjectsPage({
   initError,
   onOpen,
   onClone,
+  onCloneGitHub,
   onNew,
   onInit,
   onCancelInit,
@@ -28,6 +30,7 @@ export function ProjectsPage({
   initError: string | null
   onOpen: () => void
   onClone: () => void
+  onCloneGitHub: (account: string, cloneUrl: string) => void
   onNew: () => void
   onInit: () => void
   onCancelInit: () => void
@@ -37,6 +40,13 @@ export function ProjectsPage({
   onSettings: () => void
 }) {
   const [query, setQuery] = useState('')
+  const [githubAccount, setGithubAccount] = useState<{ username: string; default: boolean } | null>(null)
+  const showGitHubAccount = useCallback((account: { username: string; default: boolean } | null) => {
+    setGithubAccount((current) => {
+      if (current?.username === account?.username && current?.default === account?.default) return current
+      return account
+    })
+  }, [])
   const needle = query.trim().toLowerCase()
   const visible = useMemo(
     () => (needle ? projects.filter((item) => `${baseName(item.path)} ${item.path}`.toLowerCase().includes(needle)) : projects),
@@ -53,6 +63,11 @@ export function ProjectsPage({
           <span>GraphGit</span>
         </div>
         <span className="branch-pill">Projects</span>
+        {githubAccount && (
+          <span className="branch-pill" title={githubAccount.default ? 'Default GitHub account' : 'Selected GitHub account'}>
+            {githubAccount.username}
+          </span>
+        )}
         <div className="spacer" />
         <SettingsButton onClick={onSettings} disabled={busy} />
         {busy && <span className="busy-label">{busy}</span>}
@@ -90,9 +105,11 @@ export function ProjectsPage({
           )}
         </aside>
         <main className="projects-main">
-          <label className="projects-search">
-            <input value={query} placeholder="Search projects" onChange={(event) => setQuery(event.target.value)} />
-          </label>
+          <GitHubRepos busy={Boolean(busy)} onClone={onCloneGitHub} onAccount={showGitHubAccount} />
+          <div className="projects-local">
+            <label className="projects-search">
+              <input value={query} placeholder="Search projects" onChange={(event) => setQuery(event.target.value)} />
+            </label>
           {projects.length === 0 && <p className="muted pad">No projects yet. Open, clone, or create a repository and it will be listed here.</p>}
           {projects.length > 0 && visible.length === 0 && <p className="muted pad">No projects match.</p>}
           {favorites.length > 0 && (
@@ -125,6 +142,7 @@ export function ProjectsPage({
               ))}
             </section>
           )}
+          </div>
         </main>
       </div>
     </div>
