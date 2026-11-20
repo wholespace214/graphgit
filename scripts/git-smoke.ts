@@ -55,6 +55,7 @@ import {
   githubSlugFromUrl,
   pull,
   stage,
+  stageAll,
   workingDiff,
 } from '../src/main/git'
 
@@ -113,9 +114,10 @@ function parserTests() {
   assert.equal(status.changes[1]?.path, 'staged.txt')
   assert.equal(status.changes[2]?.untracked, true)
 
-  const renamed = parseStatus('## main\0R  old.ts\0new.ts\0')
+  const renamed = parseStatus('## main\0R  new.ts\0old.ts\0')
   assert.equal(renamed.changes[0]?.oldPath, 'old.ts')
   assert.equal(renamed.changes[0]?.path, 'new.ts')
+  assert.equal(renamed.changes[0]?.staged, true)
   assert.equal(renamed.changes[0]?.staged, true)
 
   const hash = 'a'.repeat(40)
@@ -222,7 +224,7 @@ function parserTests() {
 function demoGit(cwd: string, args: string[]) {
   const result = spawnSync(
     'git',
-    ['-c', 'user.name=GraphGit Demo', '-c', 'user.email=demo@graphgit.local', '-c', 'commit.gpgsign=false', ...args],
+    ['-c', 'safe.bareRepository=all', '-c', 'user.name=GraphGit Demo', '-c', 'user.email=demo@graphgit.local', '-c', 'commit.gpgsign=false', ...args],
     {
       cwd,
       encoding: 'utf8',
@@ -343,21 +345,40 @@ async function main() {
   await writeFile(path.join(demo, 'staged.txt'), 'Staged content\n')
   const staged = await stage(demo, ['staged.txt'])
   assert.equal(staged.ok, true, staged.ok ? '' : staged.error)
+  const stagedOnly = await commit(demo, 'Commit only the staged file')
+  assert.equal(stagedOnly.ok, true, stagedOnly.ok ? '' : stagedOnly.error)
+  const afterStagedCommit = await loadRepo(demo)
+  assert.equal(afterStagedCommit.ok, true)
+  if (afterStagedCommit.ok) {
+    assert.equal(afterStagedCommit.data.changes.some((change) => change.path === 'staged.txt'), false)
+    assert.equal(afterStagedCommit.data.changes.some((change) => change.path === 'notes.txt'), true)
+    assert.equal(afterStagedCommit.data.changes.some((change) => change.path === 'README.md'), true)
+  }
+  assert.equal((await commit(demo, 'Nothing is staged')).ok, false)
+  const mergeCommit = opened.data.commits.find((commit) => commit.parents.length === 2)
+  assert.ok(mergeCommit)
+  if (mergeCommit) {
+    const mergePick = await cherryPick(demo, mergeCommit.hash)
+    assert.equal(mergePick.ok, false)
+    if (!mergePick.ok) assert.match(mergePick.error, /mainline/)
+    const mergeRevert = await revert(demo, mergeCommit.hash)
+    assert.equal(mergeRevert.ok, false)
+    if (!mergeRevert.ok) assert.match(mergeRevert.error, /mainline/)
+  }
 
   const dirty = await loadRepo(demo)
   assert.equal(dirty.ok, true)
   if (!dirty.ok) return
   assert.deepEqual(
     dirty.data.changes.map((change) => change.path).sort(),
-    ['README.md', 'notes.txt', 'staged.txt'],
+    ['README.md', 'notes.txt'],
     JSON.stringify(dirty.data.changes),
   )
   const note = dirty.data.changes.find((change) => change.path === 'notes.txt')
   const readmeChange = dirty.data.changes.find((change) => change.path === 'README.md')
-  const stagedChange = dirty.data.changes.find((change) => change.path === 'staged.txt')
   assert.equal(note?.untracked, true)
   assert.equal(readmeChange?.unstaged, true)
-  assert.equal(stagedChange?.staged, true)
+  assert.equal(demoGit(demo, ['log', '-1', '--format=%s']).trim(), 'Commit only the staged file')
 
   const noteDiff = await workingDiff(demo, 'notes.txt', false)
   assert.equal(noteDiff.ok, true)
@@ -397,20 +418,13 @@ async function main() {
   assert.equal((await initRepo(looseDir)).ok, true)
   await writeFile(path.join(looseDir, 'loose.txt'), 'loose\n')
   const loose = await commit(looseDir, 'Commit working tree')
+  assert.equal(loose.ok, false)
+  if (!loose.ok) assert.match(loose.error, /Nothing to commit/)
   const looseRepo = await loadRepo(looseDir)
   assert.equal(looseRepo.ok, true)
   if (looseRepo.ok) {
-    if (loose.ok) {
-      assert.equal(loose.data, 'Commit created')
-      assert.equal(looseRepo.data.changes.length, 0)
-      assert.ok(looseRepo.data.commits.some((commit) => commit.subject === 'Commit working tree'))
-    } else {
-      assert.doesNotMatch(loose.error, /Stage at least one file/)
-      assert.equal(
-        looseRepo.data.changes.some((change) => change.path === 'loose.txt' && change.staged),
-        true,
-      )
-    }
+    assert.equal(looseRepo.data.commits.length, 0)
+    assert.equal(looseRepo.data.changes.some((change) => change.path === 'loose.txt' && change.untracked), true)
   }
 
   assert.equal(folderNameFromCloneUrl('https://github.com/acme/graphgit.git'), 'graphgit')
@@ -562,6 +576,19 @@ async function historyTests() {
   }
 
   assert.equal((await discard(repo, ['notes.txt'])).ok, true)
+  await writeFile(path.join(repo, 'moved.txt'), 'keep\n')
+  demoGit(repo, ['add', 'moved.txt'])
+  demoGit(repo, ['commit', '-m', 'add moved'])
+  demoGit(repo, ['mv', 'moved.txt', 'renamed.txt'])
+  const renamed = await loadRepo(repo)
+  assert.equal(renamed.ok, true)
+  const renamedPath = renamed.ok ? renamed.data.changes.find((change) => change.oldPath === 'moved.txt')?.path : undefined
+  assert.ok(renamedPath)
+  const renamedAway = await discard(repo, [renamedPath ?? 'renamed.txt'])
+  assert.equal(renamedAway.ok, true, renamedAway.ok ? '' : renamedAway.error)
+  const restoredName = await loadRepo(repo)
+  assert.equal(restoredName.ok, true)
+  if (restoredName.ok) assert.equal(restoredName.data.changes.some((change) => change.path === 'moved.txt' || change.path === 'renamed.txt'), false)
   await writeFile(path.join(repo, 'extra.txt'), 'new\n')
   const extra = await discard(repo, ['extra.txt'])
   assert.equal(extra.ok, true, extra.ok ? '' : extra.error)
@@ -610,6 +637,16 @@ async function historyTests() {
   if (conflicted.ok) assert.equal(conflicted.data.operation, 'merge')
   const kept = await takeSide(repo, 'notes.txt', 'ours')
   assert.equal(kept.ok, true, kept.ok ? '' : kept.error)
+  await writeFile(path.join(repo, 'aside.txt'), 'leave unstaged\n')
+  const stagedDuringMerge = await stageAll(repo)
+  assert.equal(stagedDuringMerge.ok, true, stagedDuringMerge.ok ? '' : stagedDuringMerge.error)
+  const duringMerge = await loadRepo(repo)
+  assert.equal(duringMerge.ok, true)
+  if (duringMerge.ok) {
+    const aside = duringMerge.data.changes.find((change) => change.path === 'aside.txt')
+    assert.equal(aside?.staged, true)
+    assert.equal(aside?.conflict, false)
+  }
   const continued = await continueOperation(repo)
   assert.equal(continued.ok, true, continued.ok ? '' : continued.error)
   const finished = await loadRepo(repo)

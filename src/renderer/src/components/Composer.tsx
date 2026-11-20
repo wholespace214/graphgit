@@ -79,7 +79,7 @@ export function Composer({
   const changesMax = composerWidth > 0 ? Math.max(CHANGES_MIN, composerWidth - MESSAGE_MIN - 8) : 1200
   const shownChanges = changesWidth == null ? null : clamp(changesWidth, CHANGES_MIN, changesMax)
   changesRef.current = shownChanges
-  const count = staged.length > 0 ? staged.length : unstaged.length
+  const count = staged.length
   const known = contributors.filter((person) => !withUsers.some((chosen) => chosen.email.toLowerCase() === person.email.toLowerCase()))
   const draftName = personName.trim()
   const draftEmail = personEmail.trim()
@@ -94,12 +94,10 @@ export function Composer({
         ? 'Enter a commit message'
         : 'Amend the latest commit'
       : count === 0
-        ? 'Nothing to commit'
+        ? 'Nothing staged'
         : message.trim().length === 0
           ? 'Enter a commit message'
-          : staged.length > 0
-            ? 'Commit staged files'
-            : 'Commit all changes'
+          : 'Commit staged files'
   const operationName = operation === 'cherry-pick' ? 'Cherry-pick' : operation === 'rebase' ? 'Rebase' : operation === 'revert' ? 'Revert' : 'Merge'
 
   function peopleForCommit(): Contributor[] | null {

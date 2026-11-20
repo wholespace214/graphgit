@@ -238,9 +238,8 @@ export function parseStatus(stdout: string): { header: BranchHeader; changes: Ch
     const workTree = entry[1] ?? ' '
     let filePath = entry.slice(3)
     let oldPath: string | undefined
-    if (indexStatus === 'R' || indexStatus === 'C') {
-      oldPath = filePath
-      filePath = parts[++index] ?? filePath
+    if (indexStatus === 'R' || indexStatus === 'C' || workTree === 'R' || workTree === 'C') {
+      oldPath = parts[++index] || undefined
     }
     const untracked = indexStatus === '?' && workTree === '?'
     const conflict =
@@ -707,7 +706,12 @@ export function stage(repoPath: string, paths: string[]): Promise<Result<string>
 export function stageAll(repoPath: string): Promise<Result<string>> {
   return wrap(async () => {
     const repo = await resolveRepo(repoPath)
-    await runGit(repo, ['add', '-A'], { check: true })
+    const status = await readStatus(repo)
+    const paths = status.changes
+      .filter((change) => !change.conflict && (change.unstaged || change.untracked))
+      .map((change) => change.path)
+    if (paths.length === 0) throw new GitCommandError('Nothing to stage')
+    await runGit(repo, ['add', '--', ...paths], { check: true })
     return 'Staged all changes'
   })
 }
@@ -749,10 +753,7 @@ export function commit(repoPath: string, message: string, withUsers?: unknown, a
       })
       return 'Commit amended'
     }
-    const staged = status.changes.some((change) => change.staged)
-    const pending = status.changes.some((change) => change.unstaged || change.untracked)
-    if (!staged && !pending) throw new GitCommandError('Nothing to commit')
-    if (!staged) await runGit(repo, ['add', '-A'], { check: true })
+    if (!status.changes.some((change) => change.staged)) throw new GitCommandError('Nothing to commit')
     await runGit(repo, ['commit', '-F', '-'], { stdin: formatCommitMessage(message, people), check: true })
     return 'Commit created'
   })
@@ -1126,11 +1127,20 @@ export function checkoutPullRequest(repoPath: string, number: number): Promise<R
       const actor = githubActor(repo, github.slug)
       await githubSessionJson(`/repos/${assertGitHubSlug(github.slug)}/pulls/${number}`, actor)
       const branch = `pr-${number}`
-      await runGit(repo, ['fetch', github.remote, `pull/${number}/head:refs/heads/${branch}`], {
-        check: true,
-        github: actor ?? true,
-        timeoutMs: 120_000,
-      })
+      const local = (await listBranches(repo)).find((item) => !item.remote && item.name === branch)
+      if (local?.current) throw new GitCommandError(`Switch off ${branch} before checking out this pull request`)
+      const temp = `refs/graphgit/pr-${number}`
+      try {
+        await runGit(repo, ['fetch', github.remote, `pull/${number}/head:${temp}`], {
+          check: true,
+          github: actor ?? true,
+          timeoutMs: 120_000,
+        })
+        if (local) await runGit(repo, ['branch', '-D', '--', branch], { check: true })
+        await runGit(repo, ['branch', '--', branch, temp], { check: true })
+      } finally {
+        await runGit(repo, ['update-ref', '-d', temp], { check: false })
+      }
       await runGit(repo, ['switch', '--', branch], { check: true })
       return `Checked out pull request #${number}`
     }
@@ -1152,12 +1162,14 @@ export function createPullRequest(repoPath: string, title: string, base: string)
     if (!github) throw new GitCommandError('Pull requests need a GitHub remote')
     if (gitHubSignedIn()) {
       const actor = githubActor(repo, github.slug)
+      await runGit(repo, ['push', '-u', github.remote, 'HEAD'], { check: true, github: actor ?? true, timeoutMs: 120_000 })
       const created = await githubSessionJson<{ html_url?: unknown }>(`/repos/${assertGitHubSlug(github.slug)}/pulls`, actor, {
         method: 'POST',
         body: JSON.stringify({ title: text, head: status.header.name, base, body: '' }),
       })
       return githubPageUrl(created.html_url) ?? `Opened pull request from ${status.header.name}`
     }
+    await runGit(repo, ['push', '-u', github.remote, 'HEAD'], { check: true, github: true, timeoutMs: 120_000 })
     const result = await runGh(repo, ['pr', 'create', '--repo', github.slug, '--base', base, '--head', status.header.name, '--title', text, '--body', ''])
     if (result.code !== 0) throw new GitCommandError(gitMessage(result.stderr, result.stdout))
     return outputText(result) || `Opened pull request from ${status.header.name}`
@@ -1247,7 +1259,7 @@ function operationLabel(operation: RepoOperation): string {
   return 'Revert'
 }
 
-const QUIET_EDITOR = ':'
+const QUIET_EDITOR = 'true'
 
 export function discard(repoPath: string, paths: string[]): Promise<Result<string>> {
   return wrap(async () => {
@@ -1261,9 +1273,10 @@ export function discard(repoPath: string, paths: string[]): Promise<Result<strin
     const untracked = paths.filter((file) => known.get(file)?.untracked)
     const tracked = paths.filter((file) => !known.get(file)?.untracked)
     for (const file of tracked) {
-      const restored = await runGit(repo, ['restore', '--source=HEAD', '--staged', '--worktree', '--', file], { check: false })
-      if (restored.code === 0) continue
       const change = known.get(file)
+      const targets = [file, change?.oldPath].filter((item): item is string => Boolean(item))
+      const restored = await runGit(repo, ['restore', '--source=HEAD', '--staged', '--worktree', '--', ...targets], { check: false })
+      if (restored.code === 0) continue
       if (change?.index !== 'A') throw new GitCommandError(gitMessage(restored.stderr, restored.stdout))
       await runGit(repo, ['rm', '-f', '--', file], { check: true })
     }
@@ -1277,11 +1290,13 @@ export function takeSide(repoPath: string, file: string, side: ConflictSide): Pr
     const repo = await resolveRepo(repoPath)
     assertRepoFile(file)
     if (side !== 'ours' && side !== 'theirs') throw new GitCommandError('Invalid conflict side')
-    if (!(await readOperation(repo))) throw new GitCommandError('No merge, rebase, cherry-pick, or revert is in progress')
+    const operation = await readOperation(repo)
+    if (!operation) throw new GitCommandError('No merge, rebase, cherry-pick, or revert is in progress')
     const status = await readStatus(repo)
     const change = status.changes.find((item) => item.path === file)
     if (!change?.conflict) throw new GitCommandError('That file is not in conflict')
-    await runGit(repo, ['checkout', `--${side}`, '--', file], { check: true })
+    const flag = operation === 'rebase' ? (side === 'ours' ? '--theirs' : '--ours') : `--${side}`
+    await runGit(repo, ['checkout', flag, '--', file], { check: true })
     await runGit(repo, ['add', '--', file], { check: true })
     return side === 'ours' ? `Kept our version of ${file}` : `Kept their version of ${file}`
   })
@@ -1325,9 +1340,8 @@ export function cherryPick(repoPath: string, hash: string): Promise<Result<strin
     await requireIdle(repo)
     const parents = await commitParentCount(repo, hash)
     const identity = await commitIdentityPrefix(repo, 'cherry-pick')
-    const args = [...identity, 'cherry-pick']
-    if (parents > 1) args.push('-m', '1')
-    args.push(hash)
+    if (parents > 1) throw new GitCommandError('This merge commit needs a mainline, which GraphGit cannot choose yet')
+    const args = [...identity, 'cherry-pick', hash]
     const result = await runGit(repo, args, { check: false, editor: QUIET_EDITOR })
     if (result.code !== 0) throw new GitCommandError(gitMessage(result.stderr, result.stdout))
     return `Cherry-picked ${hash.slice(0, 7)}`
@@ -1341,9 +1355,8 @@ export function revert(repoPath: string, hash: string): Promise<Result<string>> 
     await requireIdle(repo)
     const parents = await commitParentCount(repo, hash)
     const identity = await commitIdentityPrefix(repo, 'revert')
-    const args = [...identity, 'revert', '--no-edit']
-    if (parents > 1) args.push('-m', '1')
-    args.push(hash)
+    if (parents > 1) throw new GitCommandError('This merge commit needs a mainline, which GraphGit cannot choose yet')
+    const args = [...identity, 'revert', '--no-edit', hash]
     const result = await runGit(repo, args, { check: false, editor: QUIET_EDITOR })
     if (result.code !== 0) throw new GitCommandError(gitMessage(result.stderr, result.stdout))
     return `Reverted ${hash.slice(0, 7)}`
